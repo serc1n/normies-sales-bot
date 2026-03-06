@@ -40,7 +40,8 @@ ALCHEMY_SIGNING_KEY = os.environ.get("ALCHEMY_SIGNING_KEY", "")
 ALCHEMY_API_KEY     = os.environ.get("ALCHEMY_API_KEY", "kl7coWT2oFkRY0skuik4E")
 PORT = int(os.environ.get("PORT", "8080"))
 
-ALCHEMY_RPC = f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
+ALCHEMY_RPC          = f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
+NORMIES_INTERNAL_KEY = os.environ.get("NORMIES_INTERNAL_SECRET", "")
 
 
 # ── Normies API ────────────────────────────────────────────────
@@ -52,7 +53,7 @@ def fetch_normie_traits(token_id: str) -> dict:
         url, headers={
             "accept": "application/json",
             "User-Agent": "NormiesSalesBot/1.0",
-            "x-internal-secret": "OHLYMJEdi96Phf9^8cW6c",
+            "x-internal-secret": NORMIES_INTERNAL_KEY,
         }
     )
     try:
