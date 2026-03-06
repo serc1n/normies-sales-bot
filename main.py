@@ -32,11 +32,14 @@ def _is_duplicate(tx_hash: str, token_id: str) -> bool:
         _seen[key] = now
         return False
 
-NORMIES_CONTRACT = "0x9Eb6E2025B64f340691e424b7fe7022fFDE12438"
-NORMIES_IMAGE    = "https://api.normies.art/normie/{id}/image.png"
-OPENSEA_URL      = "https://opensea.io/assets/ethereum/{contract}/{id}"
+NORMIES_CONTRACT  = "0x9Eb6E2025B64f340691e424b7fe7022fFDE12438"
+CANVAS_CONTRACT   = "0x64951d92e345C50381267380e2975f66810E869c"
+ZERO_ADDRESS      = "0x0000000000000000000000000000000000000000"
+NORMIES_IMAGE     = "https://api.normies.art/normie/{id}/image.png"
+OPENSEA_URL       = "https://opensea.io/assets/ethereum/{contract}/{id}"
 
 DISCORD_WEBHOOK     = os.environ.get("DISCORD_WEBHOOK", "")
+DISCORD_BURN_WEBHOOK = os.environ.get("DISCORD_BURN_WEBHOOK", "")
 ALCHEMY_SIGNING_KEY = os.environ.get("ALCHEMY_SIGNING_KEY", "")
 ALCHEMY_API_KEY     = os.environ.get("ALCHEMY_API_KEY", "kl7coWT2oFkRY0skuik4E")
 PORT = int(os.environ.get("PORT", "8080"))
@@ -231,6 +234,51 @@ def lookup_tx_weth(tx_hash: str, buyer: str) -> float:
 
 
 
+def post_burn_discord(token_id: str, owner: str, timestamp: int):
+    if not DISCORD_BURN_WEBHOOK:
+        print(f"[burn] no DISCORD_BURN_WEBHOOK set — skipping Normie #{token_id}")
+        return
+
+    traits = fetch_normie_traits(token_id)
+    image_url = NORMIES_IMAGE.format(id=token_id)
+
+    trait_parts = []
+    if traits.get("Type"):
+        trait_parts.append(f"**Type** {traits['Type']}")
+    if traits.get("Level") is not None:
+        trait_parts.append(f"**Level** {traits['Level']}")
+    if traits.get("Pixel Count") is not None:
+        trait_parts.append(f"**Pixels** {traits['Pixel Count']}")
+
+    fields = [{"name": "Burned by", "value": short_addr(owner), "inline": False}]
+    if trait_parts:
+        fields.append({"name": "\u200b", "value": "  ·  ".join(trait_parts), "inline": False})
+
+    embed = {
+        "title": f"Normie #{token_id} burned",
+        "color": 0xFF4444,
+        "thumbnail": {"url": image_url},
+        "fields": fields,
+        "footer": {"text": "Normies · Built by Normies, for Normies"},
+        "timestamp": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat(),
+    }
+
+    payload = json.dumps({"embeds": [embed]}).encode()
+    req = urllib.request.Request(
+        DISCORD_BURN_WEBHOOK,
+        data=payload,
+        headers={"Content-Type": "application/json", "User-Agent": "NormiesSalesBot/1.0"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            print(f"[burn] posted Normie #{token_id} burned by {short_addr(owner)}")
+    except urllib.error.HTTPError as e:
+        print(f"[burn] HTTP {e.code}: {e.read().decode()}")
+    except Exception as e:
+        print(f"[burn] error: {e}")
+
+
 # ── Alchemy webhook signature verification ────────────────────
 
 def verify_signature(body: bytes, sig_header: str) -> bool:
@@ -266,8 +314,8 @@ def handle_alchemy_event(payload: dict):
             token_id = str(int(token_id, 16))
 
         # Skip mints (from zero address)
-        if from_addr == "0x0000000000000000000000000000000000000000":
-            print(f"[alchemy] skipping Normie #{token_id} — mint (not a sale)")
+        if from_addr == ZERO_ADDRESS:
+            print(f"[alchemy] skipping Normie #{token_id} — mint")
             continue
 
         block_time = activity.get("blockTimestamp", "")
@@ -276,7 +324,16 @@ def handle_alchemy_event(payload: dict):
                 block_time.replace("Z", "+00:00")
             ).timestamp())
         except Exception:
-            ts = int(__import__("time").time())
+            ts = int(time.time())
+
+        # Detect burns (to zero address or Canvas contract)
+        if to_addr.lower() in (ZERO_ADDRESS, CANVAS_CONTRACT.lower()):
+            if _is_duplicate(tx_hash, f"burn:{token_id}"):
+                print(f"[alchemy] skipping Normie #{token_id} burn — duplicate")
+                continue
+            print(f"[alchemy] burn detected: Normie #{token_id} by {short_addr(from_addr)}")
+            post_burn_discord(token_id=token_id, owner=from_addr, timestamp=ts)
+            continue
 
         # Alchemy NFT activity value=0 for marketplace sales (OpenSea/Blur route ETH
         # through their contracts). Look up real price via Alchemy APIs instead.
