@@ -14,6 +14,13 @@ import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone
 
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    from cryptography.exceptions import InvalidSignature
+    HAS_CRYPTOGRAPHY = True
+except ImportError:
+    HAS_CRYPTOGRAPHY = False
+
 # Deduplication: track (tx_hash, token_id) pairs we've already posted.
 # Stored as {key: timestamp}, entries expire after 1 hour.
 _seen_lock = threading.Lock()
@@ -38,10 +45,13 @@ ZERO_ADDRESS      = "0x0000000000000000000000000000000000000000"
 NORMIES_IMAGE     = "https://api.normies.art/normie/{id}/image.png"
 OPENSEA_URL       = "https://opensea.io/assets/ethereum/{contract}/{id}"
 
-DISCORD_WEBHOOK     = os.environ.get("DISCORD_WEBHOOK", "")
+DISCORD_WEBHOOK      = os.environ.get("DISCORD_WEBHOOK", "")
 DISCORD_BURN_WEBHOOK = os.environ.get("DISCORD_BURN_WEBHOOK", "")
-ALCHEMY_SIGNING_KEY = os.environ.get("ALCHEMY_SIGNING_KEY", "")
-ALCHEMY_API_KEY     = os.environ.get("ALCHEMY_API_KEY", "kl7coWT2oFkRY0skuik4E")
+DISCORD_APP_ID       = os.environ.get("DISCORD_APP_ID", "")
+DISCORD_BOT_TOKEN    = os.environ.get("DISCORD_BOT_TOKEN", "")
+DISCORD_PUBLIC_KEY   = os.environ.get("DISCORD_PUBLIC_KEY", "")
+ALCHEMY_SIGNING_KEY  = os.environ.get("ALCHEMY_SIGNING_KEY", "")
+ALCHEMY_API_KEY      = os.environ.get("ALCHEMY_API_KEY", "kl7coWT2oFkRY0skuik4E")
 PORT = int(os.environ.get("PORT", "8080"))
 
 ALCHEMY_RPC          = f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
@@ -399,6 +409,84 @@ def handle_alchemy_event(payload: dict):
         )
 
 
+# ── Discord slash commands ─────────────────────────────────────
+
+def verify_discord_signature(public_key_hex: str, signature_hex: str,
+                              timestamp: str, body: bytes) -> bool:
+    if not HAS_CRYPTOGRAPHY or not public_key_hex:
+        return True
+    try:
+        key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key_hex))
+        key.verify(bytes.fromhex(signature_hex), timestamp.encode() + body)
+        return True
+    except (InvalidSignature, Exception):
+        return False
+
+
+def register_slash_commands():
+    if not DISCORD_APP_ID or not DISCORD_BOT_TOKEN:
+        print("[discord] DISCORD_APP_ID or DISCORD_BOT_TOKEN not set — skipping slash command registration")
+        return
+    url = f"https://discord.com/api/v10/applications/{DISCORD_APP_ID}/commands"
+    command = {
+        "name": "normie",
+        "description": "Show image and traits of a Normie",
+        "options": [{
+            "name": "id",
+            "description": "Normie ID (0–9999)",
+            "type": 4,       # INTEGER
+            "required": True,
+            "min_value": 0,
+            "max_value": 9999,
+        }],
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(command).encode(),
+        headers={
+            "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
+            "Content-Type": "application/json",
+            "User-Agent": "NormiesSalesBot/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            print(f"[discord] /normie slash command registered (HTTP {resp.status})")
+    except urllib.error.HTTPError as e:
+        print(f"[discord] slash command registration failed: {e.code} {e.read().decode()}")
+    except Exception as e:
+        print(f"[discord] slash command registration error: {e}")
+
+
+def handle_normie_command(token_id: int) -> dict:
+    traits = fetch_normie_traits(str(token_id))
+    image_url = NORMIES_IMAGE.format(id=token_id)
+    os_url    = OPENSEA_URL.format(contract=NORMIES_CONTRACT, id=token_id)
+
+    trait_parts = []
+    if traits.get("Type"):
+        trait_parts.append(f"**Type** {traits['Type']}")
+    if traits.get("Level") is not None:
+        trait_parts.append(f"**Level** {traits['Level']}")
+    if traits.get("Pixel Count") is not None:
+        trait_parts.append(f"**Pixels** {traits['Pixel Count']}")
+
+    fields = []
+    if trait_parts:
+        fields.append({"name": "\u200b", "value": "  ·  ".join(trait_parts), "inline": False})
+
+    embed = {
+        "title": f"Normie #{token_id}",
+        "url": os_url,
+        "color": 0x48494B,
+        "image": {"url": image_url},
+        "fields": fields,
+        "footer": {"text": "Normies · Built by Normies, for Normies"},
+    }
+    return {"type": 4, "data": {"embeds": [embed]}}
+
+
 # ── HTTP server (receives Alchemy webhook POSTs) ──────────────
 
 class WebhookHandler(BaseHTTPRequestHandler):
@@ -433,6 +521,41 @@ class WebhookHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body   = self.rfile.read(length)
 
+        # Discord interactions endpoint
+        if self.path == "/interactions":
+            timestamp = self.headers.get("x-signature-timestamp", "")
+            signature = self.headers.get("x-signature-ed25519", "")
+            if not verify_discord_signature(DISCORD_PUBLIC_KEY, signature, timestamp, body):
+                print("[interactions] invalid signature — rejected")
+                self.send_response(401)
+                self.end_headers()
+                return
+            try:
+                payload = json.loads(body)
+                # Type 1 = PING (Discord health check)
+                if payload.get("type") == 1:
+                    self._json({"type": 1})
+                    return
+                # Type 2 = APPLICATION_COMMAND
+                if payload.get("type") == 2:
+                    data    = payload.get("data", {})
+                    options = {o["name"]: o["value"] for o in data.get("options", [])}
+                    if data.get("name") == "normie":
+                        token_id = int(options.get("id", 0))
+                        # Defer response first (fetch can take a moment)
+                        self._json({"type": 5})  # DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+                        threading.Thread(
+                            target=self._followup_normie,
+                            args=(payload.get("token"), token_id),
+                            daemon=True,
+                        ).start()
+                        return
+            except Exception as e:
+                print(f"[interactions] error: {e}")
+                self.send_response(500)
+                self.end_headers()
+            return
+
         # Verify Alchemy signature
         sig = self.headers.get("x-alchemy-signature", "")
         if not verify_signature(body, sig):
@@ -464,6 +587,31 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.send_response(500)
             self.end_headers()
 
+    def _json(self, data: dict):
+        body = json.dumps(data).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _followup_normie(self, interaction_token: str, token_id: int):
+        result = handle_normie_command(token_id)
+        url = f"https://discord.com/api/v10/webhooks/{DISCORD_APP_ID}/{interaction_token}/messages/@original"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(result["data"]).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "NormiesSalesBot/1.0",
+            },
+            method="PATCH",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15):
+                print(f"[interactions] /normie {token_id} — response sent")
+        except Exception as e:
+            print(f"[interactions] followup failed: {e}")
+
     def log_message(self, fmt, *args):
         # Suppress default HTTP log noise
         pass
@@ -472,6 +620,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
 def main():
     print(f"Normies sales bot starting on port {PORT}")
     print(f"Contract: {NORMIES_CONTRACT}")
+    register_slash_commands()
     server = HTTPServer(("0.0.0.0", PORT), WebhookHandler)
     server.serve_forever()
 
