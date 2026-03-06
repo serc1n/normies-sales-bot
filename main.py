@@ -75,8 +75,9 @@ def post_discord(token_id: str, price_eth: float, price_usd: float,
 
 # ── Alchemy RPC sale lookup ────────────────────────────────────
 
-WETH_CONTRACT = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
-TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+WETH_CONTRACT      = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+TRANSFER_TOPIC     = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+SEAPORT_FULFILLED  = "0x9d9af8e38d66c62e2c12f0225249fd9d721c54b83f48d9352c97c6cacdcb6f31"
 
 
 def _rpc(method: str, params: list) -> dict:
@@ -90,32 +91,50 @@ def _rpc(method: str, params: list) -> dict:
         return json.loads(resp.read()).get("result") or {}
 
 
-def lookup_nft_sale_price(tx_hash: str, token_id: str) -> float:
-    """Alchemy getNFTSales — exact per-NFT sale price including all fees.
-    Works correctly for bulk purchases since it returns one entry per token."""
-    url = (
-        f"https://eth-mainnet.g.alchemy.com/nft/v3/{ALCHEMY_API_KEY}/getNFTSales"
-        f"?contractAddress={NORMIES_CONTRACT}&tokenId={token_id}&limit=10"
-    )
-    req = urllib.request.Request(
-        url, headers={"accept": "application/json", "User-Agent": "NormiesSalesBot/1.0"}
-    )
+def lookup_seaport_price(tx_hash: str, token_id: str) -> float:
+    """Decode Seaport OrderFulfilled event from tx receipt to get exact per-NFT price.
+    Works for single sales and bulk sweeps — each OrderFulfilled maps to one NFT."""
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-            for sale in data.get("nftSales", []):
-                if sale.get("transactionHash", "").lower() == tx_hash.lower():
-                    total = 0
-                    for fee_key in ("sellerFee", "protocolFee", "royaltyFee"):
-                        fee = sale.get(fee_key) or {}
-                        raw = fee.get("amount", "0") or "0"
-                        decimals = int(fee.get("decimals", 18) or 18)
-                        amount = int(raw, 16) if str(raw).startswith("0x") else int(raw)
-                        total += amount / (10 ** decimals)
-                    if total > 0:
-                        return total
+        receipt = _rpc("eth_getTransactionReceipt", [tx_hash])
+        for log in receipt.get("logs", []):
+            topics = log.get("topics", [])
+            if not topics or topics[0] != SEAPORT_FULFILLED:
+                continue
+            d = bytes.fromhex(log["data"].removeprefix("0x"))
+            if len(d) < 128:
+                continue
+            # [0:32] orderHash  [32:64] recipient
+            # [64:96] offset→offer[]  [96:128] offset→consideration[]
+            offer_off = int.from_bytes(d[64:96], "big")
+            cons_off  = int.from_bytes(d[96:128], "big")
+
+            # Decode offer array — SpentItem = (itemType, token, identifier, amount) = 4×32
+            offer_len = int.from_bytes(d[offer_off:offer_off+32], "big")
+            found = False
+            for i in range(offer_len):
+                s = offer_off + 32 + i * 128
+                token_addr = "0x" + d[s+32:s+64].hex()[-40:]
+                identifier = int.from_bytes(d[s+64:s+96], "big")
+                if (token_addr.lower() == NORMIES_CONTRACT.lower()
+                        and str(identifier) == str(token_id)):
+                    found = True
+                    break
+            if not found:
+                continue
+
+            # Decode consideration array — ReceivedItem = (itemType, token, id, amount, recipient) = 5×32
+            cons_len = int.from_bytes(d[cons_off:cons_off+32], "big")
+            total_eth = 0
+            for j in range(cons_len):
+                s = cons_off + 32 + j * 160
+                item_type = int.from_bytes(d[s:s+32], "big")
+                amount    = int.from_bytes(d[s+96:s+128], "big")
+                if item_type == 0:  # native ETH
+                    total_eth += amount
+            if total_eth > 0:
+                return total_eth / 1e18
     except Exception as e:
-        print(f"[alchemy-nft] getNFTSales failed for #{token_id} tx {tx_hash}: {e}")
+        print(f"[seaport] decode failed for #{token_id} tx {tx_hash}: {e}")
     return 0.0
 
 
@@ -206,21 +225,21 @@ def handle_alchemy_event(payload: dict):
         price_usd = 0.0
 
         if tx_hash:
-            # 1. getNFTSales — exact per-NFT price from Alchemy (works for all sale types,
-            #    bulk purchases, and correctly splits fees/royalties per token)
-            price_eth = lookup_nft_sale_price(tx_hash, token_id)
+            # 1. Decode Seaport OrderFulfilled — exact per-NFT price for both
+            #    single sales and bulk sweeps (each event maps to one NFT)
+            price_eth = lookup_seaport_price(tx_hash, token_id)
             if price_eth > 0:
-                print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (getNFTSales)")
+                print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (seaport)")
             else:
-                # 2. Native ETH fallback — single listed sale (msg.value = exact price)
-                price_eth = lookup_tx_eth(tx_hash)
+                # 2. WETH fallback — offer accepted via non-Seaport path
+                price_eth = lookup_tx_weth(tx_hash, to_addr)
                 if price_eth > 0:
-                    print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (tx.value fallback)")
+                    print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (WETH fallback)")
                 else:
-                    # 3. WETH fallback — single offer acceptance
-                    price_eth = lookup_tx_weth(tx_hash, to_addr)
+                    # 3. Native ETH fallback — last resort
+                    price_eth = lookup_tx_eth(tx_hash)
                     if price_eth > 0:
-                        print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (WETH fallback)")
+                        print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (tx.value fallback)")
                     else:
                         print(f"[price] no price found for tx {tx_hash} Normie #{token_id}")
 
