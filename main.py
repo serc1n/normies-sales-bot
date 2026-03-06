@@ -141,6 +141,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith("/test"):
+            if not DISCORD_WEBHOOK:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ERROR: DISCORD_WEBHOOK env var is not set!")
+                return
             post_discord(
                 token_id="42",
                 price_eth=0.08,
@@ -152,7 +157,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             )
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b"Test sale posted to Discord!")
+            self.wfile.write(f"Test fired! Webhook URL: {DISCORD_WEBHOOK[:50]}...".encode())
             return
 
         # Health check
