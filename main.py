@@ -6,10 +6,30 @@ import json
 import hmac
 import hashlib
 import base64
+import threading
+import time
 import urllib.request
 import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone
+
+# Deduplication: track (tx_hash, token_id) pairs we've already posted.
+# Stored as {key: timestamp}, entries expire after 1 hour.
+_seen_lock = threading.Lock()
+_seen: dict[str, float] = {}
+
+def _is_duplicate(tx_hash: str, token_id: str) -> bool:
+    key = f"{tx_hash.lower()}:{token_id}"
+    now = time.time()
+    with _seen_lock:
+        # Expire old entries
+        expired = [k for k, t in _seen.items() if now - t > 3600]
+        for k in expired:
+            del _seen[k]
+        if key in _seen:
+            return True
+        _seen[key] = now
+        return False
 
 NORMIES_CONTRACT = "0x9Eb6E2025B64f340691e424b7fe7022fFDE12438"
 NORMIES_IMAGE    = "https://api.normies.art/normie/{id}/image.png"
@@ -247,6 +267,10 @@ def handle_alchemy_event(payload: dict):
             print(f"[alchemy] skipping Normie #{token_id} — price=0 (likely not a sale)")
             continue
 
+        if _is_duplicate(tx_hash, token_id):
+            print(f"[alchemy] skipping Normie #{token_id} — duplicate (already posted)")
+            continue
+
         print(f"[alchemy] sale confirmed: Normie #{token_id} for {price_eth} ETH")
         post_discord(
             token_id=token_id,
@@ -306,12 +330,18 @@ class WebhookHandler(BaseHTTPRequestHandler):
             webhook_type = payload.get("type", "")
             print(f"[webhook] received type={webhook_type} body={body[:300]}")
 
-            if webhook_type == "NFT_ACTIVITY":
-                handle_alchemy_event(payload)
-
+            # Respond immediately so Alchemy doesn't retry due to timeout
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"ok")
+
+            # Process in background thread to avoid blocking the HTTP response
+            if webhook_type == "NFT_ACTIVITY":
+                threading.Thread(
+                    target=handle_alchemy_event,
+                    args=(payload,),
+                    daemon=True,
+                ).start()
 
         except Exception as e:
             print(f"[webhook] error processing payload: {e}")
