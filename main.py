@@ -74,7 +74,7 @@ def fetch_normie_traits(token_id: str) -> dict:
 # ── Discord ────────────────────────────────────────────────────
 
 def short_addr(addr: str) -> str:
-    return f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
+    return addr[:6] if len(addr) >= 6 else addr
 
 
 def post_discord(token_id: str, price_eth: float, price_usd: float,
