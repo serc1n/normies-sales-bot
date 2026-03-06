@@ -91,18 +91,20 @@ def post_discord(token_id: str, price_eth: float, price_usd: float,
 
     traits = fetch_normie_traits(token_id)
 
-    fields = [
-        {"name": "Price",  "value": price_str,          "inline": True},
-        {"name": "Seller", "value": short_addr(seller), "inline": True},
-        {"name": "Buyer",  "value": short_addr(buyer),  "inline": True},
-    ]
-
+    trait_parts = []
     if traits.get("Type"):
-        fields.append({"name": "Type",        "value": str(traits["Type"]),         "inline": True})
+        trait_parts.append(f"**Type** {traits['Type']}")
     if traits.get("Level") is not None:
-        fields.append({"name": "Level",       "value": str(traits["Level"]),        "inline": True})
+        trait_parts.append(f"**Level** {traits['Level']}")
     if traits.get("Pixel Count") is not None:
-        fields.append({"name": "Pixel Count", "value": str(traits["Pixel Count"]),  "inline": True})
+        trait_parts.append(f"**Pixels** {traits['Pixel Count']}")
+
+    fields = [
+        {"name": "Price",           "value": price_str,                                      "inline": False},
+        {"name": "Seller → Buyer",  "value": f"{short_addr(seller)} → {short_addr(buyer)}", "inline": False},
+    ]
+    if trait_parts:
+        fields.append({"name": "\u200b", "value": "  ·  ".join(trait_parts), "inline": False})
     embed = {
         "title": f"Normie #{token_id} sold",
         "url": os_url,
