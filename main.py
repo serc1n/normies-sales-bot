@@ -15,6 +15,7 @@ NORMIES_CONTRACT = "0x9Eb6E2025B64f340691e424b7fe7022fFDE12438"
 NORMIES_IMAGE    = "https://api.normies.art/normie/{id}/image.png"
 OPENSEA_URL      = "https://opensea.io/assets/ethereum/{contract}/{id}"
 ETHERSCAN_TX     = "https://etherscan.io/tx/{tx}"
+RESERVOIR_API    = "https://api.reservoir.tools"
 
 DISCORD_WEBHOOK     = os.environ.get("DISCORD_WEBHOOK", "")
 ALCHEMY_SIGNING_KEY = os.environ.get("ALCHEMY_SIGNING_KEY", "")
@@ -75,6 +76,26 @@ def post_discord(token_id: str, price_eth: float, price_usd: float,
         print(f"[discord] error: {e}")
 
 
+# ── Reservoir sale lookup ──────────────────────────────────────
+
+def lookup_sale(tx_hash: str, token_id: str) -> dict | None:
+    """Look up sale price from Reservoir by tx hash + token id. Returns sale dict or None."""
+    url = f"{RESERVOIR_API}/sales/v6?txHash={tx_hash}&limit=50"
+    req = urllib.request.Request(url, headers={"accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            for sale in data.get("sales", []):
+                if str(sale.get("token", {}).get("tokenId")) == str(token_id):
+                    return sale
+            # fallback: return first sale from this tx if token match fails
+            sales = data.get("sales", [])
+            return sales[0] if sales else None
+    except Exception as e:
+        print(f"[reservoir] lookup failed for tx {tx_hash}: {e}")
+        return None
+
+
 # ── Alchemy webhook signature verification ────────────────────
 
 def verify_signature(body: bytes, sig_header: str) -> bool:
@@ -94,9 +115,7 @@ def handle_alchemy_event(payload: dict):
     for activity in activities:
         print(f"[alchemy] activity: {json.dumps(activity)[:400]}")
 
-        category = activity.get("category", "")
         contract = activity.get("contractAddress", "").lower()
-        value    = float(activity.get("value", 0))
 
         if contract != NORMIES_CONTRACT.lower():
             print(f"[alchemy] skipping — wrong contract: {contract}")
@@ -111,6 +130,11 @@ def handle_alchemy_event(payload: dict):
         if token_id and token_id.startswith("0x"):
             token_id = str(int(token_id, 16))
 
+        # Skip mints (from zero address)
+        if from_addr == "0x0000000000000000000000000000000000000000":
+            print(f"[alchemy] skipping Normie #{token_id} — mint (not a sale)")
+            continue
+
         block_time = activity.get("blockTimestamp", "")
         try:
             ts = int(datetime.fromisoformat(
@@ -119,16 +143,35 @@ def handle_alchemy_event(payload: dict):
         except Exception:
             ts = int(__import__("time").time())
 
-        # Skip zero-value transfers (not sales)
-        if value <= 0:
-            print(f"[alchemy] skipping Normie #{token_id} — value={value} (not a sale)")
+        # Alchemy value is 0 for marketplace sales (OpenSea/Blur pay via contract)
+        # Always look up the real price from Reservoir
+        inline_value = float(activity.get("value", 0))
+        price_eth = inline_value
+
+        if tx_hash:
+            print(f"[alchemy] looking up sale price for tx {tx_hash} Normie #{token_id}")
+            sale = lookup_sale(tx_hash, token_id)
+            if sale:
+                price_raw = sale.get("price", {}).get("amount", {}).get("decimal", 0)
+                price_eth = float(price_raw) if price_raw else 0
+                price_usd_raw = sale.get("price", {}).get("amount", {}).get("usd", 0)
+                price_usd = float(price_usd_raw) if price_usd_raw else 0
+                print(f"[reservoir] Normie #{token_id} — {price_eth} ETH (${price_usd:.0f})")
+            else:
+                price_usd = 0
+                print(f"[reservoir] no sale found for tx {tx_hash}, using inline value={inline_value}")
+        else:
+            price_usd = 0
+
+        if price_eth <= 0:
+            print(f"[alchemy] skipping Normie #{token_id} — price=0 (likely not a sale)")
             continue
 
-        print(f"[alchemy] sale detected: Normie #{token_id} for {value} ETH")
+        print(f"[alchemy] sale confirmed: Normie #{token_id} for {price_eth} ETH")
         post_discord(
             token_id=token_id,
-            price_eth=value,
-            price_usd=0,  # Alchemy doesn't include USD, can add via CoinGecko later
+            price_eth=price_eth,
+            price_usd=price_usd,
             buyer=to_addr,
             seller=from_addr,
             tx_hash=tx_hash,
