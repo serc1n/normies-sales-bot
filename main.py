@@ -255,7 +255,7 @@ def post_burn_discord(token_id: str, owner: str, timestamp: int):
         fields.append({"name": "\u200b", "value": "  ·  ".join(trait_parts), "inline": False})
 
     embed = {
-        "title": f"Normie #{token_id} burned",
+        "title": f"Normie #{token_id} burned 🔥",
         "color": 0xFF4444,
         "thumbnail": {"url": image_url},
         "fields": fields,
