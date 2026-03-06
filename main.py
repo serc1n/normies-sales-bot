@@ -140,7 +140,7 @@ def handle_alchemy_event(payload: dict):
 class WebhookHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
-        if self.path == "/test":
+        if self.path.startswith("/test"):
             post_discord(
                 token_id="42",
                 price_eth=0.08,
