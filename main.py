@@ -43,6 +43,29 @@ PORT = int(os.environ.get("PORT", "8080"))
 ALCHEMY_RPC = f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
 
 
+# ── Normies API ────────────────────────────────────────────────
+
+def fetch_normie_traits(token_id: str) -> dict:
+    """Fetch Type, Level, Pixel Count from api.normies.art/normie/:id/metadata."""
+    url = f"https://api.normies.art/normie/{token_id}/metadata"
+    req = urllib.request.Request(
+        url, headers={"accept": "application/json", "User-Agent": "NormiesSalesBot/1.0"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            traits = {}
+            for attr in data.get("attributes", []):
+                t = attr.get("trait_type", "")
+                v = attr.get("value")
+                if t in ("Type", "Level", "Pixel Count"):
+                    traits[t] = v
+            return traits
+    except Exception as e:
+        print(f"[normies-api] failed to fetch traits for #{token_id}: {e}")
+        return {}
+
+
 # ── Discord ────────────────────────────────────────────────────
 
 def short_addr(addr: str) -> str:
@@ -59,11 +82,20 @@ def post_discord(token_id: str, price_eth: float, price_usd: float,
     if price_usd:
         price_str += f"  (${price_usd:,.0f})"
 
+    traits = fetch_normie_traits(token_id)
+
     fields = [
-        {"name": "Price",  "value": price_str,             "inline": True},
-        {"name": "Seller", "value": short_addr(seller),    "inline": True},
-        {"name": "Buyer",  "value": short_addr(buyer),     "inline": True},
+        {"name": "Price",  "value": price_str,          "inline": True},
+        {"name": "Seller", "value": short_addr(seller), "inline": True},
+        {"name": "Buyer",  "value": short_addr(buyer),  "inline": True},
     ]
+
+    if traits.get("Type"):
+        fields.append({"name": "Type",        "value": str(traits["Type"]),         "inline": True})
+    if traits.get("Level") is not None:
+        fields.append({"name": "Level",       "value": str(traits["Level"]),        "inline": True})
+    if traits.get("Pixel Count") is not None:
+        fields.append({"name": "Pixel Count", "value": str(traits["Pixel Count"]),  "inline": True})
     embed = {
         "title": f"Normie #{token_id} sold",
         "url": os_url,
