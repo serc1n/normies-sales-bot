@@ -140,7 +140,22 @@ def handle_alchemy_event(payload: dict):
 class WebhookHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
-        # Health check for Railway
+        if self.path == "/test":
+            post_discord(
+                token_id="42",
+                price_eth=0.08,
+                price_usd=240,
+                buyer="0x9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e",
+                seller="0x1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+                tx_hash="0xabc123def456abc123def456abc123def456abc123def456abc123def456abc1",
+                timestamp=int(__import__("time").time()),
+            )
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Test sale posted to Discord!")
+            return
+
+        # Health check
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Normies sales bot running")
