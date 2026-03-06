@@ -80,8 +80,10 @@ def verify_signature(body: bytes, sig_header: str) -> bool:
     if not ALCHEMY_SIGNING_KEY:
         print("[webhook] WARNING: no signing key set, accepting all requests")
         return True
+    # Strip whsec_ prefix if present
+    raw_key = ALCHEMY_SIGNING_KEY.removeprefix("whsec_")
     expected = hmac.new(
-        ALCHEMY_SIGNING_KEY.encode(),
+        raw_key.encode(),
         body,
         hashlib.sha256,
     ).hexdigest()
