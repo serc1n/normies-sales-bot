@@ -75,53 +75,47 @@ def post_discord(token_id: str, price_eth: float, price_usd: float,
 
 # ── Alchemy RPC sale lookup ────────────────────────────────────
 
-def lookup_tx_eth(tx_hash: str) -> float:
-    """Return the ETH value (msg.value) of a transaction via Alchemy RPC.
-    For OpenSea/Seaport sales the buyer sends ETH as msg.value to the contract."""
-    body = json.dumps({
-        "jsonrpc": "2.0", "id": 1,
-        "method": "eth_getTransactionByHash",
-        "params": [tx_hash],
-    }).encode()
+WETH_CONTRACT = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+
+def _rpc(method: str, params: list) -> dict:
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
     req = urllib.request.Request(
         ALCHEMY_RPC, data=body,
         headers={"Content-Type": "application/json", "User-Agent": "NormiesSalesBot/1.0"},
         method="POST",
     )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read()).get("result") or {}
+
+
+def lookup_tx_eth(tx_hash: str) -> float:
+    """ETH msg.value — works for listed NFT sales (buyer sends native ETH to Seaport)."""
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-            tx = data.get("result") or {}
-            value_hex = tx.get("value", "0x0")
-            eth = int(value_hex, 16) / 1e18
-            return eth
+        tx = _rpc("eth_getTransactionByHash", [tx_hash])
+        return int(tx.get("value", "0x0"), 16) / 1e18
     except Exception as e:
-        print(f"[alchemy-rpc] lookup failed for tx {tx_hash}: {e}")
+        print(f"[alchemy-rpc] eth lookup failed for {tx_hash}: {e}")
         return 0.0
 
 
-def lookup_alchemy_nft_sales(tx_hash: str, token_id: str) -> tuple[float, float]:
-    """Look up sale via Alchemy getNFTSales. Returns (price_eth, price_usd)."""
-    url = (
-        f"https://eth-mainnet.g.alchemy.com/nft/v3/{ALCHEMY_API_KEY}/getNFTSales"
-        f"?contractAddress={NORMIES_CONTRACT}&tokenId={token_id}&limit=10"
-    )
-    req = urllib.request.Request(
-        url, headers={"accept": "application/json", "User-Agent": "NormiesSalesBot/1.0"}
-    )
+def lookup_tx_weth(tx_hash: str) -> float:
+    """WETH Transfer amount — works for offer-acceptance sales (buyer pays in WETH)."""
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-            for sale in data.get("nftSales", []):
-                if sale.get("transactionHash", "").lower() == tx_hash.lower():
-                    price_info = sale.get("sellerFee", {})
-                    amount     = int(price_info.get("amount", "0"), 16) if price_info.get("amount", "").startswith("0x") else int(price_info.get("amount", "0"))
-                    decimals   = int(price_info.get("decimals", 18))
-                    eth = amount / (10 ** decimals)
-                    return eth, 0.0
+        receipt = _rpc("eth_getTransactionReceipt", [tx_hash])
+        logs = receipt.get("logs", [])
+        total = 0
+        for log in logs:
+            if (log.get("address", "").lower() == WETH_CONTRACT.lower()
+                    and log.get("topics", [None])[0] == TRANSFER_TOPIC):
+                amount = int(log.get("data", "0x0"), 16)
+                total += amount
+        return total / 1e18
     except Exception as e:
-        print(f"[alchemy-nft] getNFTSales failed: {e}")
-    return 0.0, 0.0
+        print(f"[alchemy-rpc] weth lookup failed for {tx_hash}: {e}")
+        return 0.0
+
 
 
 # ── Alchemy webhook signature verification ────────────────────
@@ -178,18 +172,17 @@ def handle_alchemy_event(payload: dict):
         price_usd = 0.0
 
         if tx_hash:
-            # 1. Try getNFTSales (most accurate, includes marketplace fee breakdown)
-            price_eth, price_usd = lookup_alchemy_nft_sales(tx_hash, token_id)
+            # 1. Native ETH — listed NFT sale (buyer sends ETH as msg.value to Seaport)
+            price_eth = lookup_tx_eth(tx_hash)
             if price_eth > 0:
-                print(f"[alchemy-nft] Normie #{token_id} — {price_eth} ETH (${price_usd:.0f}) via getNFTSales")
+                print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (native, listed sale)")
             else:
-                # 2. Fallback: read msg.value from the raw transaction (works for Seaport ETH sales)
-                print(f"[alchemy] looking up tx value for {tx_hash}")
-                price_eth = lookup_tx_eth(tx_hash)
+                # 2. WETH — offer accepted (buyer pays in Wrapped ETH via ERC20 Transfer)
+                price_eth = lookup_tx_weth(tx_hash)
                 if price_eth > 0:
-                    print(f"[alchemy-rpc] Normie #{token_id} — {price_eth} ETH from tx.value")
+                    print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (WETH, offer accepted)")
                 else:
-                    print(f"[alchemy] no price found for tx {tx_hash} Normie #{token_id}")
+                    print(f"[price] no price found for tx {tx_hash} Normie #{token_id}")
 
         if price_eth <= 0:
             print(f"[alchemy] skipping Normie #{token_id} — price=0 (likely not a sale)")
