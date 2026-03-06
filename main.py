@@ -50,6 +50,22 @@ NORMIES_INTERNAL_KEY = os.environ.get("NORMIES_INTERNAL_SECRET", "")
 
 # ── Normies API ────────────────────────────────────────────────
 
+def fetch_total_burned() -> int | None:
+    """Fetch total burned Normies count from /history/stats."""
+    req = urllib.request.Request(
+        "https://api.normies.art/history/stats",
+        headers={"accept": "application/json", "User-Agent": "NormiesSalesBot/1.0",
+                 "x-internal-secret": NORMIES_INTERNAL_KEY},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            return int(data.get("totalBurnedTokens", 0))
+    except Exception as e:
+        print(f"[normies-api] failed to fetch burn stats: {e}")
+        return None
+
+
 def fetch_normie_traits(token_id: str) -> dict:
     """Fetch Type, Level, Pixel Count from api.normies.art/normie/:id/metadata."""
     url = f"https://api.normies.art/normie/{token_id}/metadata"
@@ -240,6 +256,7 @@ def post_burn_discord(token_id: str, owner: str, timestamp: int):
         return
 
     traits = fetch_normie_traits(token_id)
+    total_burned = fetch_total_burned()
     image_url = NORMIES_IMAGE.format(id=token_id)
 
     trait_parts = []
@@ -253,6 +270,8 @@ def post_burn_discord(token_id: str, owner: str, timestamp: int):
     fields = [{"name": "Burned by", "value": short_addr(owner), "inline": False}]
     if trait_parts:
         fields.append({"name": "\u200b", "value": "  ·  ".join(trait_parts), "inline": False})
+    if total_burned is not None:
+        fields.append({"name": "Total Burned", "value": f"{total_burned} / 10,000", "inline": False})
 
     embed = {
         "title": f"Normie #{token_id} burned 🔥",
