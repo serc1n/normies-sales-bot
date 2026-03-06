@@ -100,8 +100,7 @@ def post_discord(token_id: str, price_eth: float, price_usd: float,
         trait_parts.append(f"**Pixels** {traits['Pixel Count']}")
 
     fields = [
-        {"name": "Price",           "value": price_str,                                      "inline": False},
-        {"name": "Seller → Buyer",  "value": f"{short_addr(seller)} → {short_addr(buyer)}", "inline": False},
+        {"name": "Price", "value": price_str, "inline": False},
     ]
     if trait_parts:
         fields.append({"name": "\u200b", "value": "  ·  ".join(trait_parts), "inline": False})
