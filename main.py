@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 NORMIES_CONTRACT = "0x9Eb6E2025B64f340691e424b7fe7022fFDE12438"
 NORMIES_IMAGE    = "https://api.normies.art/normie/{id}/image.png"
 OPENSEA_URL      = "https://opensea.io/assets/ethereum/{contract}/{id}"
-ETHERSCAN_TX     = "https://etherscan.io/tx/{tx}"
 
 DISCORD_WEBHOOK     = os.environ.get("DISCORD_WEBHOOK", "")
 ALCHEMY_SIGNING_KEY = os.environ.get("ALCHEMY_SIGNING_KEY", "")
@@ -35,7 +34,6 @@ def post_discord(token_id: str, price_eth: float, price_usd: float,
 
     image_url = NORMIES_IMAGE.format(id=token_id)
     os_url    = OPENSEA_URL.format(contract=NORMIES_CONTRACT, id=token_id)
-    tx_url    = ETHERSCAN_TX.format(tx=tx_hash) if tx_hash else None
 
     price_str = f"{price_eth:g} ETH"
     if price_usd:
@@ -46,9 +44,6 @@ def post_discord(token_id: str, price_eth: float, price_usd: float,
         {"name": "Seller", "value": short_addr(seller),    "inline": True},
         {"name": "Buyer",  "value": short_addr(buyer),     "inline": True},
     ]
-    if tx_url:
-        fields.append({"name": "Tx", "value": f"[etherscan]({tx_url})", "inline": True})
-
     embed = {
         "title": f"Normie #{token_id} sold",
         "url": os_url,
