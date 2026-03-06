@@ -100,15 +100,20 @@ def lookup_tx_eth(tx_hash: str) -> float:
         return 0.0
 
 
-def lookup_tx_weth(tx_hash: str) -> float:
-    """WETH Transfer amount — works for offer-acceptance sales (buyer pays in WETH)."""
+def lookup_tx_weth(tx_hash: str, buyer: str) -> float:
+    """Sum WETH Transfers FROM the buyer in this tx (offer-acceptance sales).
+    Filters by buyer address so bundle transactions don't over-count."""
     try:
         receipt = _rpc("eth_getTransactionReceipt", [tx_hash])
         logs = receipt.get("logs", [])
         total = 0
+        buyer_topic = "0x" + buyer.lower().replace("0x", "").zfill(64)
         for log in logs:
+            topics = log.get("topics", [])
             if (log.get("address", "").lower() == WETH_CONTRACT.lower()
-                    and log.get("topics", [None])[0] == TRANSFER_TOPIC):
+                    and len(topics) >= 3
+                    and topics[0] == TRANSFER_TOPIC
+                    and topics[1].lower() == buyer_topic):
                 amount = int(log.get("data", "0x0"), 16)
                 total += amount
         return total / 1e18
@@ -178,7 +183,7 @@ def handle_alchemy_event(payload: dict):
                 print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (native, listed sale)")
             else:
                 # 2. WETH — offer accepted (buyer pays in Wrapped ETH via ERC20 Transfer)
-                price_eth = lookup_tx_weth(tx_hash)
+                price_eth = lookup_tx_weth(tx_hash, to_addr)
                 if price_eth > 0:
                     print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (WETH, offer accepted)")
                 else:
