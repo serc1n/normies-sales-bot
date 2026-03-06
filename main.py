@@ -84,7 +84,7 @@ def post_discord(token_id: str, price_eth: float, price_usd: float,
     image_url = NORMIES_IMAGE.format(id=token_id)
     os_url    = OPENSEA_URL.format(contract=NORMIES_CONTRACT, id=token_id)
 
-    price_rounded = math.ceil(price_eth * 10000) / 10000
+    price_rounded = round(price_eth, 4)
     price_str = f"{price_rounded:.4f} ETH"
     if price_usd:
         price_str += f"  (${price_usd:,.0f})"
