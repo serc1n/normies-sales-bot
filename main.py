@@ -90,6 +90,35 @@ def _rpc(method: str, params: list) -> dict:
         return json.loads(resp.read()).get("result") or {}
 
 
+def lookup_nft_sale_price(tx_hash: str, token_id: str) -> float:
+    """Alchemy getNFTSales — exact per-NFT sale price including all fees.
+    Works correctly for bulk purchases since it returns one entry per token."""
+    url = (
+        f"https://eth-mainnet.g.alchemy.com/nft/v3/{ALCHEMY_API_KEY}/getNFTSales"
+        f"?contractAddress={NORMIES_CONTRACT}&tokenId={token_id}&limit=10"
+    )
+    req = urllib.request.Request(
+        url, headers={"accept": "application/json", "User-Agent": "NormiesSalesBot/1.0"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            for sale in data.get("nftSales", []):
+                if sale.get("transactionHash", "").lower() == tx_hash.lower():
+                    total = 0
+                    for fee_key in ("sellerFee", "protocolFee", "royaltyFee"):
+                        fee = sale.get(fee_key) or {}
+                        raw = fee.get("amount", "0") or "0"
+                        decimals = int(fee.get("decimals", 18) or 18)
+                        amount = int(raw, 16) if str(raw).startswith("0x") else int(raw)
+                        total += amount / (10 ** decimals)
+                    if total > 0:
+                        return total
+    except Exception as e:
+        print(f"[alchemy-nft] getNFTSales failed for #{token_id} tx {tx_hash}: {e}")
+    return 0.0
+
+
 def lookup_tx_eth(tx_hash: str) -> float:
     """ETH msg.value — works for listed NFT sales (buyer sends native ETH to Seaport)."""
     try:
@@ -139,15 +168,6 @@ def handle_alchemy_event(payload: dict):
 
     print(f"[alchemy] {len(activities)} activit(ies) received")
 
-    # Count Normies per tx_hash so we can divide total tx price correctly
-    # e.g. sweep of 5 Normies: msg.value = 5x price, divide by 5 per NFT
-    normies_per_tx: dict[str, int] = {}
-    for a in activities:
-        if a.get("contractAddress", "").lower() == NORMIES_CONTRACT.lower():
-            h = a.get("hash", "")
-            if h:
-                normies_per_tx[h] = normies_per_tx.get(h, 0) + 1
-
     for activity in activities:
         print(f"[alchemy] activity: {json.dumps(activity)[:400]}")
 
@@ -161,7 +181,6 @@ def handle_alchemy_event(payload: dict):
         to_addr   = activity.get("toAddress", "")
         tx_hash   = activity.get("hash", "")
         token_id  = activity.get("erc721TokenId", "")
-        nfts_in_tx = normies_per_tx.get(tx_hash, 1)
 
         # Convert hex token id if needed
         if token_id and token_id.startswith("0x"):
@@ -187,19 +206,23 @@ def handle_alchemy_event(payload: dict):
         price_usd = 0.0
 
         if tx_hash:
-            # 1. Native ETH — listed NFT sale (buyer sends ETH as msg.value to Seaport)
-            price_eth = lookup_tx_eth(tx_hash)
+            # 1. getNFTSales — exact per-NFT price from Alchemy (works for all sale types,
+            #    bulk purchases, and correctly splits fees/royalties per token)
+            price_eth = lookup_nft_sale_price(tx_hash, token_id)
             if price_eth > 0:
-                price_eth /= nfts_in_tx
-                print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (native, {nfts_in_tx} in tx)")
+                print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (getNFTSales)")
             else:
-                # 2. WETH — offer accepted (buyer pays in Wrapped ETH via ERC20 Transfer)
-                price_eth = lookup_tx_weth(tx_hash, to_addr)
+                # 2. Native ETH fallback — single listed sale (msg.value = exact price)
+                price_eth = lookup_tx_eth(tx_hash)
                 if price_eth > 0:
-                    price_eth /= nfts_in_tx
-                    print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (WETH, {nfts_in_tx} in tx)")
+                    print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (tx.value fallback)")
                 else:
-                    print(f"[price] no price found for tx {tx_hash} Normie #{token_id}")
+                    # 3. WETH fallback — single offer acceptance
+                    price_eth = lookup_tx_weth(tx_hash, to_addr)
+                    if price_eth > 0:
+                        print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (WETH fallback)")
+                    else:
+                        print(f"[price] no price found for tx {tx_hash} Normie #{token_id}")
 
         if price_eth <= 0:
             print(f"[alchemy] skipping Normie #{token_id} — price=0 (likely not a sale)")
