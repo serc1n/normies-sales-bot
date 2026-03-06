@@ -1,107 +1,59 @@
 #!/usr/bin/env python3
-"""Normies sales tracker bot — posts Discord notifications for every sale."""
+"""Normies sales tracker — receives Alchemy webhook events and posts to Discord."""
 
 import os
-import time
 import json
+import hmac
+import hashlib
 import urllib.request
 import urllib.error
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone
 
 NORMIES_CONTRACT = "0x9Eb6E2025B64f340691e424b7fe7022fFDE12438"
-RESERVOIR_API    = "https://api.reservoir.tools"
 NORMIES_IMAGE    = "https://api.normies.art/normie/{id}/image.png"
 OPENSEA_URL      = "https://opensea.io/assets/ethereum/{contract}/{id}"
 ETHERSCAN_TX     = "https://etherscan.io/tx/{tx}"
 
-DISCORD_WEBHOOK  = os.environ["DISCORD_WEBHOOK"]
-RESERVOIR_KEY    = os.environ.get("RESERVOIR_API_KEY", "")
-POLL_INTERVAL    = int(os.environ.get("POLL_INTERVAL", "30"))  # seconds
-
-STATE_FILE = "last_sale.json"
-
-
-# ── State (last seen sale timestamp) ──────────────────────────
-
-def load_last_timestamp() -> int:
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE) as f:
-            return json.load(f).get("ts", 0)
-    return int(time.time()) - 3600  # default: look back 1 hour on first run
-
-
-def save_last_timestamp(ts: int):
-    with open(STATE_FILE, "w") as f:
-        json.dump({"ts": ts}, f)
-
-
-# ── Reservoir API ──────────────────────────────────────────────
-
-def fetch_sales(after_ts: int) -> list[dict]:
-    url = (
-        f"{RESERVOIR_API}/sales/v6"
-        f"?contract={NORMIES_CONTRACT}"
-        f"&startTimestamp={after_ts + 1}"
-        f"&sortBy=time"
-        f"&limit=20"
-    )
-    headers = {"accept": "application/json"}
-    if RESERVOIR_KEY:
-        headers["x-api-key"] = RESERVOIR_KEY
-
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-            return data.get("sales", [])
-    except urllib.error.HTTPError as e:
-        print(f"[reservoir] HTTP {e.code}: {e.reason}")
-        return []
-    except Exception as e:
-        print(f"[reservoir] error: {e}")
-        return []
+DISCORD_WEBHOOK   = os.environ["DISCORD_WEBHOOK"]
+ALCHEMY_SIGNING_KEY = os.environ.get("ALCHEMY_SIGNING_KEY", "")
+PORT = int(os.environ.get("PORT", "8080"))
 
 
 # ── Discord ────────────────────────────────────────────────────
 
-def post_discord(sale: dict):
-    token_id  = sale.get("token", {}).get("tokenId", "?")
-    price_eth = sale.get("price", {}).get("amount", {}).get("native", 0)
-    price_usd = sale.get("price", {}).get("amount", {}).get("usd", 0)
-    buyer     = sale.get("buyer", "unknown")
-    seller    = sale.get("seller", "unknown")
-    tx_hash   = sale.get("txHash", "")
-    ts        = sale.get("timestamp", int(time.time()))
+def short_addr(addr: str) -> str:
+    return f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
+
+
+def post_discord(token_id: str, price_eth: float, price_usd: float,
+                 buyer: str, seller: str, tx_hash: str, timestamp: int):
 
     image_url = NORMIES_IMAGE.format(id=token_id)
     os_url    = OPENSEA_URL.format(contract=NORMIES_CONTRACT, id=token_id)
     tx_url    = ETHERSCAN_TX.format(tx=tx_hash) if tx_hash else None
 
-    def short(addr: str) -> str:
-        return f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
-
     price_str = f"{price_eth:.4f} ETH"
     if price_usd:
         price_str += f"  (${price_usd:,.0f})"
+
+    fields = [
+        {"name": "Price",  "value": price_str,             "inline": True},
+        {"name": "Seller", "value": short_addr(seller),    "inline": True},
+        {"name": "Buyer",  "value": short_addr(buyer),     "inline": True},
+    ]
+    if tx_url:
+        fields.append({"name": "Tx", "value": f"[etherscan]({tx_url})", "inline": True})
 
     embed = {
         "title": f"Normie #{token_id} sold",
         "url": os_url,
         "color": 0x48494B,
         "thumbnail": {"url": image_url},
-        "fields": [
-            {"name": "Price",  "value": price_str,       "inline": True},
-            {"name": "Seller", "value": short(seller),   "inline": True},
-            {"name": "Buyer",  "value": short(buyer),    "inline": True},
-        ],
-        "footer": {
-            "text": "Normies · Built by Normies, for Normies",
-        },
-        "timestamp": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+        "fields": fields,
+        "footer": {"text": "Normies · Built by Normies, for Normies"},
+        "timestamp": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat(),
     }
-
-    if tx_url:
-        embed["fields"].append({"name": "Tx", "value": f"[etherscan]({tx_url})", "inline": True})
 
     payload = json.dumps({"embeds": [embed]}).encode()
     req = urllib.request.Request(
@@ -111,44 +63,126 @@ def post_discord(sale: dict):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            print(f"[discord] posted Normie #{token_id} sale ({price_eth:.4f} ETH)")
+        with urllib.request.urlopen(req, timeout=10):
+            print(f"[discord] posted Normie #{token_id} — {price_eth:.4f} ETH")
     except urllib.error.HTTPError as e:
         print(f"[discord] HTTP {e.code}: {e.read().decode()}")
     except Exception as e:
         print(f"[discord] error: {e}")
 
 
-# ── Main loop ──────────────────────────────────────────────────
+# ── Alchemy webhook signature verification ────────────────────
 
-def main():
-    print(f"Normies sales bot starting — polling every {POLL_INTERVAL}s")
-    print(f"Contract: {NORMIES_CONTRACT}")
+def verify_signature(body: bytes, sig_header: str) -> bool:
+    if not ALCHEMY_SIGNING_KEY:
+        return True  # skip verification if key not set
+    expected = hmac.new(
+        ALCHEMY_SIGNING_KEY.encode(),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, sig_header)
 
-    last_ts = load_last_timestamp()
-    print(f"Watching sales after {datetime.fromtimestamp(last_ts).strftime('%Y-%m-%d %H:%M:%S')}")
 
-    while True:
+# ── Parse Alchemy NFT activity payload ───────────────────────
+
+def handle_alchemy_event(payload: dict):
+    """Parse Alchemy NFT activity webhook and post sale to Discord."""
+    event = payload.get("event", {})
+    activities = event.get("activity", [])
+
+    for activity in activities:
+        # Only process sales (fromAddress is seller, toAddress is buyer)
+        category = activity.get("category", "")
+        if category != "token":
+            continue
+
+        contract = activity.get("contractAddress", "").lower()
+        if contract != NORMIES_CONTRACT.lower():
+            continue
+
+        from_addr = activity.get("fromAddress", "")
+        to_addr   = activity.get("toAddress", "")
+        tx_hash   = activity.get("hash", "")
+        value     = float(activity.get("value", 0))
+        token_id  = activity.get("erc721TokenId", "")
+
+        # Convert hex token id if needed
+        if token_id and token_id.startswith("0x"):
+            token_id = str(int(token_id, 16))
+
+        block_time = activity.get("blockTimestamp", "")
         try:
-            sales = fetch_sales(last_ts)
+            ts = int(datetime.fromisoformat(
+                block_time.replace("Z", "+00:00")
+            ).timestamp())
+        except Exception:
+            ts = int(__import__("time").time())
 
-            if sales:
-                # Reservoir returns newest first — process oldest first
-                for sale in reversed(sales):
-                    post_discord(sale)
-                    time.sleep(1)  # avoid Discord rate limit
+        # Skip zero-value transfers (not sales)
+        if value <= 0:
+            continue
 
-                newest_ts = max(s.get("timestamp", 0) for s in sales)
-                if newest_ts > last_ts:
-                    last_ts = newest_ts
-                    save_last_timestamp(last_ts)
-            else:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] no new sales")
+        print(f"[alchemy] sale detected: Normie #{token_id} for {value} ETH")
+        post_discord(
+            token_id=token_id,
+            price_eth=value,
+            price_usd=0,  # Alchemy doesn't include USD, can add via CoinGecko later
+            buyer=to_addr,
+            seller=from_addr,
+            tx_hash=tx_hash,
+            timestamp=ts,
+        )
+
+
+# ── HTTP server (receives Alchemy webhook POSTs) ──────────────
+
+class WebhookHandler(BaseHTTPRequestHandler):
+
+    def do_GET(self):
+        # Health check for Railway
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Normies sales bot running")
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body   = self.rfile.read(length)
+
+        # Verify Alchemy signature
+        sig = self.headers.get("x-alchemy-signature", "")
+        if not verify_signature(body, sig):
+            print("[webhook] invalid signature — rejected")
+            self.send_response(401)
+            self.end_headers()
+            return
+
+        try:
+            payload = json.loads(body)
+            webhook_type = payload.get("type", "")
+
+            if webhook_type == "NFT_ACTIVITY":
+                handle_alchemy_event(payload)
+
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
 
         except Exception as e:
-            print(f"[loop] unexpected error: {e}")
+            print(f"[webhook] error processing payload: {e}")
+            self.send_response(500)
+            self.end_headers()
 
-        time.sleep(POLL_INTERVAL)
+    def log_message(self, fmt, *args):
+        # Suppress default HTTP log noise
+        pass
+
+
+def main():
+    print(f"Normies sales bot starting on port {PORT}")
+    print(f"Contract: {NORMIES_CONTRACT}")
+    server = HTTPServer(("0.0.0.0", PORT), WebhookHandler)
+    server.serve_forever()
 
 
 if __name__ == "__main__":
