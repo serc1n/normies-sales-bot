@@ -59,7 +59,10 @@ def post_discord(token_id: str, price_eth: float, price_usd: float,
     req = urllib.request.Request(
         DISCORD_WEBHOOK,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "NormiesSalesBot/1.0",
+        },
         method="POST",
     )
     try:
@@ -75,13 +78,17 @@ def post_discord(token_id: str, price_eth: float, price_usd: float,
 
 def verify_signature(body: bytes, sig_header: str) -> bool:
     if not ALCHEMY_SIGNING_KEY:
-        return True  # skip verification if key not set
+        print("[webhook] WARNING: no signing key set, accepting all requests")
+        return True
     expected = hmac.new(
         ALCHEMY_SIGNING_KEY.encode(),
         body,
         hashlib.sha256,
     ).hexdigest()
-    return hmac.compare_digest(expected, sig_header)
+    result = hmac.compare_digest(expected, sig_header)
+    if not result:
+        print(f"[webhook] sig mismatch — got={sig_header[:20]}... expected={expected[:20]}...")
+    return result
 
 
 # ── Parse Alchemy NFT activity payload ───────────────────────
