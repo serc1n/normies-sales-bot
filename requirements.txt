@@ -1,1 +1,1 @@
-# No external dependencies — stdlib only (urllib, http.server, hmac)
+

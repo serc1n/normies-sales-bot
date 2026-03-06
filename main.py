@@ -15,7 +15,7 @@ NORMIES_IMAGE    = "https://api.normies.art/normie/{id}/image.png"
 OPENSEA_URL      = "https://opensea.io/assets/ethereum/{contract}/{id}"
 ETHERSCAN_TX     = "https://etherscan.io/tx/{tx}"
 
-DISCORD_WEBHOOK   = os.environ["DISCORD_WEBHOOK"]
+DISCORD_WEBHOOK     = os.environ.get("DISCORD_WEBHOOK", "")
 ALCHEMY_SIGNING_KEY = os.environ.get("ALCHEMY_SIGNING_KEY", "")
 PORT = int(os.environ.get("PORT", "8080"))
 
