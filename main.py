@@ -139,6 +139,15 @@ def handle_alchemy_event(payload: dict):
 
     print(f"[alchemy] {len(activities)} activit(ies) received")
 
+    # Count Normies per tx_hash so we can divide total tx price correctly
+    # e.g. sweep of 5 Normies: msg.value = 5x price, divide by 5 per NFT
+    normies_per_tx: dict[str, int] = {}
+    for a in activities:
+        if a.get("contractAddress", "").lower() == NORMIES_CONTRACT.lower():
+            h = a.get("hash", "")
+            if h:
+                normies_per_tx[h] = normies_per_tx.get(h, 0) + 1
+
     for activity in activities:
         print(f"[alchemy] activity: {json.dumps(activity)[:400]}")
 
@@ -152,6 +161,7 @@ def handle_alchemy_event(payload: dict):
         to_addr   = activity.get("toAddress", "")
         tx_hash   = activity.get("hash", "")
         token_id  = activity.get("erc721TokenId", "")
+        nfts_in_tx = normies_per_tx.get(tx_hash, 1)
 
         # Convert hex token id if needed
         if token_id and token_id.startswith("0x"):
@@ -180,12 +190,14 @@ def handle_alchemy_event(payload: dict):
             # 1. Native ETH — listed NFT sale (buyer sends ETH as msg.value to Seaport)
             price_eth = lookup_tx_eth(tx_hash)
             if price_eth > 0:
-                print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (native, listed sale)")
+                price_eth /= nfts_in_tx
+                print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (native, {nfts_in_tx} in tx)")
             else:
                 # 2. WETH — offer accepted (buyer pays in Wrapped ETH via ERC20 Transfer)
                 price_eth = lookup_tx_weth(tx_hash, to_addr)
                 if price_eth > 0:
-                    print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (WETH, offer accepted)")
+                    price_eth /= nfts_in_tx
+                    print(f"[price] Normie #{token_id} — {price_eth:.4f} ETH (WETH, {nfts_in_tx} in tx)")
                 else:
                     print(f"[price] no price found for tx {tx_hash} Normie #{token_id}")
 
