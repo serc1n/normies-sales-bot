@@ -34,7 +34,7 @@ def post_discord(token_id: str, price_eth: float, price_usd: float,
     os_url    = OPENSEA_URL.format(contract=NORMIES_CONTRACT, id=token_id)
     tx_url    = ETHERSCAN_TX.format(tx=tx_hash) if tx_hash else None
 
-    price_str = f"{price_eth:.4f} ETH"
+    price_str = f"{price_eth:g} ETH"
     if price_usd:
         price_str += f"  (${price_usd:,.0f})"
 
