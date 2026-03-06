@@ -15,11 +15,13 @@ NORMIES_CONTRACT = "0x9Eb6E2025B64f340691e424b7fe7022fFDE12438"
 NORMIES_IMAGE    = "https://api.normies.art/normie/{id}/image.png"
 OPENSEA_URL      = "https://opensea.io/assets/ethereum/{contract}/{id}"
 ETHERSCAN_TX     = "https://etherscan.io/tx/{tx}"
-RESERVOIR_API    = "https://api.reservoir.tools"
 
 DISCORD_WEBHOOK     = os.environ.get("DISCORD_WEBHOOK", "")
 ALCHEMY_SIGNING_KEY = os.environ.get("ALCHEMY_SIGNING_KEY", "")
+ALCHEMY_API_KEY     = os.environ.get("ALCHEMY_API_KEY", "kl7coWT2oFkRY0skuik4E")
 PORT = int(os.environ.get("PORT", "8080"))
+
+ALCHEMY_RPC = f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
 
 
 # ── Discord ────────────────────────────────────────────────────
@@ -76,24 +78,55 @@ def post_discord(token_id: str, price_eth: float, price_usd: float,
         print(f"[discord] error: {e}")
 
 
-# ── Reservoir sale lookup ──────────────────────────────────────
+# ── Alchemy RPC sale lookup ────────────────────────────────────
 
-def lookup_sale(tx_hash: str, token_id: str) -> dict | None:
-    """Look up sale price from Reservoir by tx hash + token id. Returns sale dict or None."""
-    url = f"{RESERVOIR_API}/sales/v6?txHash={tx_hash}&limit=50"
-    req = urllib.request.Request(url, headers={"accept": "application/json"})
+def lookup_tx_eth(tx_hash: str) -> float:
+    """Return the ETH value (msg.value) of a transaction via Alchemy RPC.
+    For OpenSea/Seaport sales the buyer sends ETH as msg.value to the contract."""
+    body = json.dumps({
+        "jsonrpc": "2.0", "id": 1,
+        "method": "eth_getTransactionByHash",
+        "params": [tx_hash],
+    }).encode()
+    req = urllib.request.Request(
+        ALCHEMY_RPC, data=body,
+        headers={"Content-Type": "application/json", "User-Agent": "NormiesSalesBot/1.0"},
+        method="POST",
+    )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
-            for sale in data.get("sales", []):
-                if str(sale.get("token", {}).get("tokenId")) == str(token_id):
-                    return sale
-            # fallback: return first sale from this tx if token match fails
-            sales = data.get("sales", [])
-            return sales[0] if sales else None
+            tx = data.get("result") or {}
+            value_hex = tx.get("value", "0x0")
+            eth = int(value_hex, 16) / 1e18
+            return eth
     except Exception as e:
-        print(f"[reservoir] lookup failed for tx {tx_hash}: {e}")
-        return None
+        print(f"[alchemy-rpc] lookup failed for tx {tx_hash}: {e}")
+        return 0.0
+
+
+def lookup_alchemy_nft_sales(tx_hash: str, token_id: str) -> tuple[float, float]:
+    """Look up sale via Alchemy getNFTSales. Returns (price_eth, price_usd)."""
+    url = (
+        f"https://eth-mainnet.g.alchemy.com/nft/v3/{ALCHEMY_API_KEY}/getNFTSales"
+        f"?contractAddress={NORMIES_CONTRACT}&tokenId={token_id}&limit=10"
+    )
+    req = urllib.request.Request(
+        url, headers={"accept": "application/json", "User-Agent": "NormiesSalesBot/1.0"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            for sale in data.get("nftSales", []):
+                if sale.get("transactionHash", "").lower() == tx_hash.lower():
+                    price_info = sale.get("sellerFee", {})
+                    amount     = int(price_info.get("amount", "0"), 16) if price_info.get("amount", "").startswith("0x") else int(price_info.get("amount", "0"))
+                    decimals   = int(price_info.get("decimals", 18))
+                    eth = amount / (10 ** decimals)
+                    return eth, 0.0
+    except Exception as e:
+        print(f"[alchemy-nft] getNFTSales failed: {e}")
+    return 0.0, 0.0
 
 
 # ── Alchemy webhook signature verification ────────────────────
@@ -143,25 +176,25 @@ def handle_alchemy_event(payload: dict):
         except Exception:
             ts = int(__import__("time").time())
 
-        # Alchemy value is 0 for marketplace sales (OpenSea/Blur pay via contract)
-        # Always look up the real price from Reservoir
+        # Alchemy NFT activity value=0 for marketplace sales (OpenSea/Blur route ETH
+        # through their contracts). Look up real price via Alchemy APIs instead.
         inline_value = float(activity.get("value", 0))
         price_eth = inline_value
+        price_usd = 0.0
 
         if tx_hash:
-            print(f"[alchemy] looking up sale price for tx {tx_hash} Normie #{token_id}")
-            sale = lookup_sale(tx_hash, token_id)
-            if sale:
-                price_raw = sale.get("price", {}).get("amount", {}).get("decimal", 0)
-                price_eth = float(price_raw) if price_raw else 0
-                price_usd_raw = sale.get("price", {}).get("amount", {}).get("usd", 0)
-                price_usd = float(price_usd_raw) if price_usd_raw else 0
-                print(f"[reservoir] Normie #{token_id} — {price_eth} ETH (${price_usd:.0f})")
+            # 1. Try getNFTSales (most accurate, includes marketplace fee breakdown)
+            price_eth, price_usd = lookup_alchemy_nft_sales(tx_hash, token_id)
+            if price_eth > 0:
+                print(f"[alchemy-nft] Normie #{token_id} — {price_eth} ETH (${price_usd:.0f}) via getNFTSales")
             else:
-                price_usd = 0
-                print(f"[reservoir] no sale found for tx {tx_hash}, using inline value={inline_value}")
-        else:
-            price_usd = 0
+                # 2. Fallback: read msg.value from the raw transaction (works for Seaport ETH sales)
+                print(f"[alchemy] looking up tx value for {tx_hash}")
+                price_eth = lookup_tx_eth(tx_hash)
+                if price_eth > 0:
+                    print(f"[alchemy-rpc] Normie #{token_id} — {price_eth} ETH from tx.value")
+                else:
+                    print(f"[alchemy] no price found for tx {tx_hash} Normie #{token_id}")
 
         if price_eth <= 0:
             print(f"[alchemy] skipping Normie #{token_id} — price=0 (likely not a sale)")
