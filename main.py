@@ -91,20 +91,22 @@ def handle_alchemy_event(payload: dict):
     event = payload.get("event", {})
     activities = event.get("activity", [])
 
-    for activity in activities:
-        # Only process sales (fromAddress is seller, toAddress is buyer)
-        category = activity.get("category", "")
-        if category != "token":
-            continue
+    print(f"[alchemy] {len(activities)} activit(ies) received")
 
+    for activity in activities:
+        print(f"[alchemy] activity: {json.dumps(activity)[:400]}")
+
+        category = activity.get("category", "")
         contract = activity.get("contractAddress", "").lower()
+        value    = float(activity.get("value", 0))
+
         if contract != NORMIES_CONTRACT.lower():
+            print(f"[alchemy] skipping — wrong contract: {contract}")
             continue
 
         from_addr = activity.get("fromAddress", "")
         to_addr   = activity.get("toAddress", "")
         tx_hash   = activity.get("hash", "")
-        value     = float(activity.get("value", 0))
         token_id  = activity.get("erc721TokenId", "")
 
         # Convert hex token id if needed
@@ -121,6 +123,7 @@ def handle_alchemy_event(payload: dict):
 
         # Skip zero-value transfers (not sales)
         if value <= 0:
+            print(f"[alchemy] skipping Normie #{token_id} — value={value} (not a sale)")
             continue
 
         print(f"[alchemy] sale detected: Normie #{token_id} for {value} ETH")
@@ -180,6 +183,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(body)
             webhook_type = payload.get("type", "")
+            print(f"[webhook] received type={webhook_type} body={body[:300]}")
 
             if webhook_type == "NFT_ACTIVITY":
                 handle_alchemy_event(payload)
