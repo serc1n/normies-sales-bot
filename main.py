@@ -49,7 +49,11 @@ def fetch_normie_traits(token_id: str) -> dict:
     """Fetch Type, Level, Pixel Count from api.normies.art/normie/:id/metadata."""
     url = f"https://api.normies.art/normie/{token_id}/metadata"
     req = urllib.request.Request(
-        url, headers={"accept": "application/json", "User-Agent": "NormiesSalesBot/1.0"}
+        url, headers={
+            "accept": "application/json",
+            "User-Agent": "NormiesSalesBot/1.0",
+            "x-internal-secret": "OHLYMJEdi96Phf9^8cW6c",
+        }
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
