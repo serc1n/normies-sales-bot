@@ -1049,6 +1049,9 @@ async def on_message(message: discord.Message):
     if cmd == "!higher":
         await message.reply("https://cdn.discordapp.com/attachments/1476174593281626255/1479753393076572172/IMG_5756.gif?ex=69ad2f3d&is=69abddbd&hm=d7300e52db6e699bf3f59da0c92347ee87ac250e7338fe2a71e1163810daa0b0&")
         return
+    if cmd == "!sweep":
+        await message.reply("https://cdn.discordapp.com/attachments/1476174593281626255/1478808927515836416/grok-video-46560cfa-bf8e-4260-ab30-40704eeb901f-ezgif.com-video-to-gif-converter.gif?ex=69ad0b63&is=69abb9e3&hm=4be521fb79a8cc3b50cc11f167e762c5f2d1796d7446347708e60d1a3b09c292&")
+        return
     if cmd == "!fud":
         video_data = await asyncio.to_thread(_get_fud_video)
         if video_data and len(video_data) <= 8 * 1024 * 1024:
