@@ -529,11 +529,21 @@ def _pixelate_to_normie(img_bytes: io.BytesIO, output_size: int = 40) -> "Image.
 
 
 def _bw_to_png_bytes(bw_img: "Image.Image", upscale: int = 10) -> bytes:
-    """Upscale 1-bit image and return PNG bytes."""
+    """Upscale 1-bit image to RGB PNG using official Normies colors."""
+    COLOR_ON  = (0x48, 0x49, 0x4b)  # #48494b — pixel on
+    COLOR_OFF = (0xe3, 0xe5, 0xe4)  # #e3e5e4 — pixel off
     w, h = bw_img.size
-    large = bw_img.convert("L").resize((w * upscale, h * upscale), Image.Resampling.NEAREST)
+    src = bw_img.convert("1")
+    out = Image.new("RGB", (w * upscale, h * upscale), COLOR_OFF)
+    pixels = out.load()
+    for y in range(h):
+        for x in range(w):
+            color = COLOR_ON if src.getpixel((x, y)) == 0 else COLOR_OFF
+            for dy in range(upscale):
+                for dx in range(upscale):
+                    pixels[x * upscale + dx, y * upscale + dy] = color
     buf = io.BytesIO()
-    large.save(buf, format="PNG")
+    out.save(buf, format="PNG")
     return buf.getvalue()
 
 
