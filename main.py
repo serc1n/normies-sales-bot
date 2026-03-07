@@ -7,6 +7,7 @@ import math
 import hmac
 import hashlib
 import base64
+import random
 import threading
 import time
 import urllib.request
@@ -57,6 +58,16 @@ PORT = int(os.environ.get("PORT", "8080"))
 ALCHEMY_RPC          = f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
 NORMIES_INTERNAL_KEY = os.environ.get("NORMIES_INTERNAL_SECRET", "")
 
+THE100 = [
+    464,9846,9197,8183,5052,6227,7491,6497,2623,9548,7490,2449,6303,2532,513,
+    1384,9852,9879,6143,820,9155,2286,7413,1879,108,455,9999,1932,7627,1188,
+    9239,235,3846,6765,9076,3732,1476,7908,7479,8576,115,5707,5816,9735,9982,
+    2908,9644,7011,5679,7384,1617,8990,4868,117,4358,6241,5665,2006,7976,8115,
+    8759,7887,133,27,6016,9980,7652,2565,6884,1603,1204,4057,9612,7028,1898,
+    4829,1208,6793,1370,4354,9445,3123,6309,615,7961,8612,6155,3408,8510,3837,
+    999,8362,376,4681,3465,9561,8831,5010,2060,7374,
+]
+
 
 # ── Normies API ────────────────────────────────────────────────
 
@@ -93,7 +104,7 @@ def fetch_normie_traits(token_id: str) -> dict:
             for attr in data.get("attributes", []):
                 t = attr.get("trait_type", "")
                 v = attr.get("value")
-                if t in ("Type", "Level", "Pixel Count"):
+                if t in ("Type", "Level", "Pixel Count", "Action Points"):
                     traits[t] = v
             return traits
     except Exception as e:
@@ -428,38 +439,44 @@ def register_slash_commands():
         print("[discord] DISCORD_APP_ID or DISCORD_BOT_TOKEN not set — skipping slash command registration")
         return
     url = f"https://discord.com/api/v10/applications/{DISCORD_APP_ID}/commands"
-    command = {
-        "name": "normie",
-        "description": "Show image and traits of a Normie",
-        "options": [{
-            "name": "id",
-            "description": "Normie ID (0–9999)",
-            "type": 4,       # INTEGER
-            "required": True,
-            "min_value": 0,
-            "max_value": 9999,
-        }],
-    }
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(command).encode(),
-        headers={
-            "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
-            "Content-Type": "application/json",
-            "User-Agent": "NormiesSalesBot/1.0",
+    for command in [
+        {
+            "name": "normie",
+            "description": "Show image and traits of a Normie",
+            "options": [{
+                "name": "id",
+                "description": "Normie ID (0–9999)",
+                "type": 4,
+                "required": True,
+                "min_value": 0,
+                "max_value": 9999,
+            }],
         },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            print(f"[discord] /normie slash command registered (HTTP {resp.status})")
-    except urllib.error.HTTPError as e:
-        print(f"[discord] slash command registration failed: {e.code} {e.read().decode()}")
-    except Exception as e:
-        print(f"[discord] slash command registration error: {e}")
+        {
+            "name": "the100",
+            "description": "Show a random Normie from THE100",
+        },
+    ]:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(command).encode(),
+            headers={
+                "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
+                "Content-Type": "application/json",
+                "User-Agent": "NormiesSalesBot/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                print(f"[discord] /{command['name']} slash command registered (HTTP {resp.status})")
+        except urllib.error.HTTPError as e:
+            print(f"[discord] slash command registration failed: {e.code} {e.read().decode()}")
+        except Exception as e:
+            print(f"[discord] slash command registration error: {e}")
 
 
-def handle_normie_command(token_id: int) -> dict:
+def build_normie_embed(token_id: int, title_prefix: str = "") -> dict:
     traits = fetch_normie_traits(str(token_id))
     image_url = NORMIES_IMAGE.format(id=token_id)
     os_url    = OPENSEA_URL.format(contract=NORMIES_CONTRACT, id=token_id)
@@ -471,19 +488,31 @@ def handle_normie_command(token_id: int) -> dict:
         trait_parts.append(f"**Level** {traits['Level']}")
     if traits.get("Pixel Count") is not None:
         trait_parts.append(f"**Pixels** {traits['Pixel Count']}")
+    if traits.get("Action Points") is not None:
+        trait_parts.append(f"**AP** {traits['Action Points']}")
 
     fields = []
     if trait_parts:
         fields.append({"name": "\u200b", "value": "  ·  ".join(trait_parts), "inline": False})
 
-    embed = {
-        "title": f"Normie #{token_id}",
+    title = f"{title_prefix}Normie #{token_id}".strip()
+    return {
+        "title": title,
         "url": os_url,
         "color": 0x48494B,
         "image": {"url": image_url},
         "fields": fields,
         "footer": {"text": "Normies · Built by Normies, for Normies"},
     }
+
+
+def handle_normie_command(token_id: int) -> dict:
+    return {"type": 4, "data": {"embeds": [build_normie_embed(token_id)]}}
+
+
+def handle_the100_command() -> dict:
+    token_id = random.choice(THE100)
+    embed = build_normie_embed(token_id, title_prefix="THE100 · ")
     return {"type": 4, "data": {"embeds": [embed]}}
 
 
@@ -542,11 +571,19 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     options = {o["name"]: o["value"] for o in data.get("options", [])}
                     if data.get("name") == "normie":
                         token_id = int(options.get("id", 0))
-                        # Defer response first (fetch can take a moment)
-                        self._json({"type": 5})  # DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+                        self._json({"type": 5})  # defer — fetch takes a moment
                         threading.Thread(
                             target=self._followup_normie,
                             args=(payload.get("token"), token_id),
+                            daemon=True,
+                        ).start()
+                        return
+                    if data.get("name") == "the100":
+                        token_id = random.choice(THE100)
+                        self._json({"type": 5})
+                        threading.Thread(
+                            target=self._followup_normie,
+                            args=(payload.get("token"), token_id, "THE100 · "),
                             daemon=True,
                         ).start()
                         return
@@ -594,12 +631,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _followup_normie(self, interaction_token: str, token_id: int):
-        result = handle_normie_command(token_id)
+    def _followup_normie(self, interaction_token: str, token_id: int, title_prefix: str = ""):
+        embed = build_normie_embed(token_id, title_prefix=title_prefix)
         url = f"https://discord.com/api/v10/webhooks/{DISCORD_APP_ID}/{interaction_token}/messages/@original"
         req = urllib.request.Request(
             url,
-            data=json.dumps(result["data"]).encode(),
+            data=json.dumps({"embeds": [embed]}).encode(),
             headers={
                 "Content-Type": "application/json",
                 "User-Agent": "NormiesSalesBot/1.0",
