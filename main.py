@@ -597,12 +597,24 @@ def register_slash_commands():
         {
             "name": "generate",
             "description": "Generate a new Normie using AI",
-            "options": [{
-                "name": "prompt",
-                "description": "Describe what to generate (e.g. 'alien with sunglasses'). Leave empty for random.",
-                "type": 3,
-                "required": False,
-            }],
+            "options": [
+                {
+                    "name": "prompt",
+                    "description": "Describe what to generate (e.g. 'alien with sunglasses'). Leave empty for random.",
+                    "type": 3,
+                    "required": False,
+                },
+                {
+                    "name": "size",
+                    "description": "Pixel grid size (default 40x40)",
+                    "type": 4,
+                    "required": False,
+                    "choices": [
+                        {"name": "40x40", "value": 40},
+                        {"name": "10x10", "value": 10},
+                    ],
+                },
+            ],
         },
     ]:
         req = urllib.request.Request(
@@ -740,10 +752,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
                             self._json({"type": 4, "data": {"content": "⚠️ Generation is not configured on this bot.", "flags": 64}})
                             return
                         user_prompt = options.get("prompt")
+                        pixel_size = int(options.get("size", 40))
                         self._json({"type": 5})
                         threading.Thread(
                             target=self._followup_generate,
-                            args=(payload.get("token"), user_prompt),
+                            args=(payload.get("token"), user_prompt, pixel_size),
                             daemon=True,
                         ).start()
                         return
@@ -809,25 +822,24 @@ class WebhookHandler(BaseHTTPRequestHandler):
         except Exception as e:
             print(f"[interactions] followup failed: {e}")
 
-    def _followup_generate(self, interaction_token: str, user_prompt: str | None):
+    def _followup_generate(self, interaction_token: str, user_prompt: str | None, pixel_size: int = 40):
         url = f"https://discord.com/api/v10/webhooks/{DISCORD_APP_ID}/{interaction_token}/messages/@original"
         try:
             os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
             prompt, label = _build_gen_prompt(user_prompt)
-            print(f"[generate] prompt={prompt[:80]}...")
+            print(f"[generate] prompt={prompt[:80]}... size={pixel_size}x{pixel_size}")
 
             output = replicate_client.run(REPLICATE_MODEL, input={"prompt": prompt})
             image_url = str(output[0]) if isinstance(output, list) else str(output)
 
-            # Download generated image
             with urllib.request.urlopen(image_url, timeout=60) as r:
                 img_bytes = io.BytesIO(r.read())
 
-            # Pixelate to Normie style (40x40 B&W) then upscale to 400x400 PNG
-            bw_img  = _pixelate_to_normie(img_bytes)
-            png_data = _bw_to_png_bytes(bw_img, upscale=10)
+            bw_img   = _pixelate_to_normie(img_bytes, output_size=pixel_size)
+            upscale  = max(10, 400 // pixel_size)
+            png_data = _bw_to_png_bytes(bw_img, upscale=upscale)
 
-            content = f"**Generated Normie** · {label}"
+            content = f"**Generated Normie** ({pixel_size}x{pixel_size}) · {label}"
             _discord_patch_with_file(url, "normie.png", png_data, content)
             print(f"[generate] sent successfully")
 
