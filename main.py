@@ -17,7 +17,20 @@ import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone
 
+import io
 import discord
+
+try:
+    import replicate as replicate_client
+    HAS_REPLICATE = True
+except ImportError:
+    HAS_REPLICATE = False
+
+try:
+    from PIL import Image, ImageEnhance
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -63,6 +76,8 @@ PORT = int(os.environ.get("PORT", "8080"))
 
 ALCHEMY_RPC          = f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
 NORMIES_INTERNAL_KEY = os.environ.get("NORMIES_INTERNAL_SECRET", "")
+REPLICATE_API_TOKEN  = os.environ.get("REPLICATE_API_TOKEN", "")
+REPLICATE_MODEL      = os.environ.get("REPLICATE_MODEL", "black-forest-labs/flux-schnell")
 
 THE100 = [
     464,9846,9197,8183,5052,6227,7491,6497,2623,9548,7490,2449,6303,2532,513,
@@ -440,6 +455,113 @@ def verify_discord_signature(public_key_hex: str, signature_hex: str,
         return False
 
 
+# ── Normie Generator (AI pipeline) ───────────────────────────────────────────
+
+_GEN_TYPES   = ["human", "cat", "alien", "agent"]
+_GEN_TYPE_W  = [98, 1, 0.5, 0.5]
+_GEN_TYPE_DESC = {
+    "human": "person",
+    "cat":   "humanoid cat character with cat ears and whiskers",
+    "alien": "alien creature with extraterrestrial features, unique head shape",
+    "agent": "robot android character with mechanical features, digital elements",
+}
+_GEN_AGES    = ["young adult", "middle-aged", "elderly"]
+_GEN_GENDERS = ["male", "female", "non-binary"]
+_GEN_GENDER_W = [45, 45, 10]
+_GEN_HAIR    = ["short hair","long hair","curly hair","spiky hair","wild hair",
+                "messy hair","mohawk","bald","afro","buzz cut","knitted cap"]
+_GEN_FACIAL  = ["full beard","mustache","goatee","clean shaven","freckles","rosy cheeks"]
+_GEN_EYES    = ["classic shades","nerd glasses","no glasses","eye patch","horned rim glasses"]
+_GEN_EXPR    = ["neutral","slight smile","serious","confident","friendly"]
+_GEN_ACCESS  = ["top hat","fedora","beanie","cap","earring","gold chain","no accessories"]
+
+
+def _build_gen_prompt(user_prompt: str | None = None) -> tuple[str, str]:
+    """Return (full_prompt, description_label) for generation."""
+    if user_prompt and user_prompt.strip():
+        prompt = (
+            f"pixel art character portrait, {user_prompt.strip()}, "
+            "front facing, upper body visible with shoulders, centered composition, "
+            "retro RPG game character sprite, 16-bit style, simple flat colors, "
+            "clean pixel art, plain white background"
+        )
+        return prompt, user_prompt.strip()
+
+    char_type = random.choices(_GEN_TYPES, weights=_GEN_TYPE_W)[0]
+    age       = random.choice(_GEN_AGES)
+    gender    = random.choices(_GEN_GENDERS, weights=_GEN_GENDER_W)[0]
+    hair      = random.choice(_GEN_HAIR)
+    facial    = random.choice(_GEN_FACIAL)
+    eyes      = random.choice(_GEN_EYES)
+    expr      = random.choice(_GEN_EXPR)
+    accessory = random.choice(_GEN_ACCESS)
+
+    parts = [_GEN_TYPE_DESC[char_type], age, gender, f"with {hair}"]
+    if eyes != "no glasses":
+        parts.append(f"with {eyes}")
+    parts.extend([facial, expr])
+    if accessory != "no accessories":
+        parts.append(f"wearing {accessory}")
+    description = ", ".join(parts)
+
+    prompt = (
+        f"pixel art character portrait, {description}, "
+        "front facing, upper body visible with shoulders, centered composition, "
+        "retro RPG game character sprite, 16-bit style, simple flat colors, "
+        "clean pixel art, plain white background"
+    )
+    label = f"{char_type} · {gender} · {hair}"
+    return prompt, label
+
+
+def _pixelate_to_normie(img_bytes: io.BytesIO, output_size: int = 40) -> "Image.Image":
+    """Pixelate image to output_size × output_size, 1-bit B&W (Normie style)."""
+    img = Image.open(img_bytes)
+    w, h = img.size
+    min_d = min(w, h)
+    img = img.crop(((w - min_d) // 2, (h - min_d) // 2,
+                    (w + min_d) // 2, (h + min_d) // 2))
+    img = img.resize((output_size, output_size), Image.Resampling.NEAREST)
+    img = img.convert("L")
+    img = ImageEnhance.Contrast(img).enhance(2.5)
+    img = ImageEnhance.Brightness(img).enhance(1.1)
+    return img.convert("1")
+
+
+def _bw_to_png_bytes(bw_img: "Image.Image", upscale: int = 10) -> bytes:
+    """Upscale 1-bit image and return PNG bytes."""
+    w, h = bw_img.size
+    large = bw_img.convert("L").resize((w * upscale, h * upscale), Image.Resampling.NEAREST)
+    buf = io.BytesIO()
+    large.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _discord_patch_with_file(url: str, filename: str, file_data: bytes, content: str = "") -> None:
+    """PATCH a Discord interaction message with a file attachment."""
+    boundary = f"----NormieBoundary{random.randint(10000, 99999)}"
+    payload  = json.dumps({"content": content,
+                           "attachments": [{"id": "0", "filename": filename}]})
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="payload_json"\r\n'
+        "Content-Type: application/json\r\n\r\n"
+        f"{payload}\r\n"
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="files[0]"; filename="{filename}"\r\n'
+        "Content-Type: image/png\r\n\r\n"
+    ).encode() + file_data + f"\r\n--{boundary}--\r\n".encode()
+
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}",
+                 "User-Agent": "NormiesSalesBot/1.0"},
+        method="PATCH",
+    )
+    with urllib.request.urlopen(req, timeout=30):
+        pass
+
+
 def register_slash_commands():
     if not DISCORD_APP_ID or not DISCORD_BOT_TOKEN:
         print("[discord] DISCORD_APP_ID or DISCORD_BOT_TOKEN not set — skipping slash command registration")
@@ -461,6 +583,16 @@ def register_slash_commands():
         {
             "name": "the100",
             "description": "Show a random Normie from THE100",
+        },
+        {
+            "name": "generate",
+            "description": "Generate a new Normie using AI",
+            "options": [{
+                "name": "prompt",
+                "description": "Describe what to generate (e.g. 'alien with sunglasses'). Leave empty for random.",
+                "type": 3,
+                "required": False,
+            }],
         },
     ]:
         req = urllib.request.Request(
@@ -593,6 +725,18 @@ class WebhookHandler(BaseHTTPRequestHandler):
                             daemon=True,
                         ).start()
                         return
+                    if data.get("name") == "generate":
+                        if not REPLICATE_API_TOKEN or not HAS_REPLICATE or not HAS_PIL:
+                            self._json({"type": 4, "data": {"content": "⚠️ Generation is not configured on this bot.", "flags": 64}})
+                            return
+                        user_prompt = options.get("prompt")
+                        self._json({"type": 5})
+                        threading.Thread(
+                            target=self._followup_generate,
+                            args=(payload.get("token"), user_prompt),
+                            daemon=True,
+                        ).start()
+                        return
             except Exception as e:
                 print(f"[interactions] error: {e}")
                 self.send_response(500)
@@ -654,6 +798,41 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 print(f"[interactions] /normie {token_id} — response sent")
         except Exception as e:
             print(f"[interactions] followup failed: {e}")
+
+    def _followup_generate(self, interaction_token: str, user_prompt: str | None):
+        url = f"https://discord.com/api/v10/webhooks/{DISCORD_APP_ID}/{interaction_token}/messages/@original"
+        try:
+            os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
+            prompt, label = _build_gen_prompt(user_prompt)
+            print(f"[generate] prompt={prompt[:80]}...")
+
+            output = replicate_client.run(REPLICATE_MODEL, input={"prompt": prompt})
+            image_url = str(output[0]) if isinstance(output, list) else str(output)
+
+            # Download generated image
+            with urllib.request.urlopen(image_url, timeout=60) as r:
+                img_bytes = io.BytesIO(r.read())
+
+            # Pixelate to Normie style (40x40 B&W) then upscale to 400x400 PNG
+            bw_img  = _pixelate_to_normie(img_bytes)
+            png_data = _bw_to_png_bytes(bw_img, upscale=10)
+
+            content = f"**Generated Normie** · {label}"
+            _discord_patch_with_file(url, "normie.png", png_data, content)
+            print(f"[generate] sent successfully")
+
+        except Exception as e:
+            print(f"[generate] failed: {e}")
+            error_payload = json.dumps({"content": f"⚠️ Generation failed: {e}"}).encode()
+            req = urllib.request.Request(
+                url, data=error_payload,
+                headers={"Content-Type": "application/json", "User-Agent": "NormiesSalesBot/1.0"},
+                method="PATCH",
+            )
+            try:
+                urllib.request.urlopen(req, timeout=10)
+            except Exception:
+                pass
 
     def log_message(self, fmt, *args):
         # Suppress default HTTP log noise
