@@ -830,6 +830,52 @@ async def on_message(message: discord.Message):
     if cmd == "!higher":
         await message.reply("https://cdn.discordapp.com/attachments/1476174593281626255/1479753393076572172/IMG_5756.gif?ex=69ad2f3d&is=69abddbd&hm=d7300e52db6e699bf3f59da0c92347ee87ac250e7338fe2a71e1163810daa0b0&")
         return
+    # Community tools commands
+    _TOOLS = {
+        "!normieslidepuzzle": "https://normie-puzzle.vercel.app/",
+        "!normiecam": "https://legacy.normies.art/normiecam",
+        "!normies3d": "https://normie-3d.vercel.app/",
+        "!normiesrun": "https://normies.run/",
+        "!normiesbordercontrol": "https://normies-border-control.vercel.app/",
+        "!normiecard": "https://legacy.normies.art/normiecard",
+        "!normiesmemory": "https://editor.p5js.org/nftgothsa/full/StEIA7Ldo",
+        "!normieradio": "https://yasuna-ide.github.io/normie-radio/",
+        "!messagefromnormies": "https://messages-from-normies-production.up.railway.app/",
+        "!normiesgrid": "https://legacy.normies.art/grid",
+        "!normsky": "https://normski-generator.vercel.app/",
+        "!normiepunks": "https://normies.backpunks.com/",
+        "!normifier": "https://normifier.vercel.app/",
+        "!normiegenerator": "https://legacy.normies.art/",
+        "!normieyearbook": "https://normie-yearbook.vercel.app/",
+        "!normiebeats": "https://normiebeats.vercel.app",
+        "!normiesmemegenerator": "https://normies-memegenerator.vercel.app/",
+        "!normiesnews": "https://legacy.normies.art/normiesnews",
+        "!normiesgames": "https://normies-blackjack.vercel.app/",
+        "!normiesaints": "https://normiesaint.vercel.app/",
+        "!norminesweeper": "https://norminesweeper.vercel.app/",
+        "!normiespixelhunter": "https://normies-pixelhunter-ac26.vercel.app/",
+        "!normiespvp": "https://legacy.normies.art/pvp",
+        "!normieslegobuilder": "https://normies-lego-builder.vercel.app/",
+        "!normiesbricks": "https://normies-x-bricks.vercel.app",
+        "!normiescompat": "https://normies-compact.vercel.app/",
+        "!normiesarchive": "https://normiesarchive.vercel.app/",
+        "!editnormies": "https://www.editnormies.com/",
+        "!normiecoloring": "https://editor.p5js.org/realseenaa/full/75oCNlnMp",
+        "!flipnormies": "https://normies-flip.vercel.app/",
+        "!burntracker": "https://normiesburntracker.lovable.app/",
+        "!normiespopeart": "https://editor.p5js.org/realseenaa/full/BEumjluT_",
+        "!glitchnormie": "https://glitch-normies.vercel.app/",
+        "!normiesterminal": "https://normies-terminal.vercel.app/",
+        "!normiemixer": "https://normie-mixer.vercel.app/",
+        "!normiesnegative": "https://normies-negative.vercel.app/",
+        "!drawyournormie": "https://raw.githubusercontent.com/Gothsa/normies/main/drawyournormie.pdf",
+        "!normiespixgrabber": "https://editor.p5js.org/nftmooods/full/PRBv_Bgoq",
+        "!normiesmatch": "https://normies-match.netlify.app/",
+        "!normiesdailyroulette": "https://normies-daily.vercel.app/",
+    }
+    if cmd in _TOOLS:
+        await message.reply(_TOOLS[cmd])
+        return
 
     # gm reaction
     if re.search(r"\bgm\b", message.content, re.IGNORECASE):
