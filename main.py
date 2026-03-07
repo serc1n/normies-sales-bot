@@ -792,6 +792,13 @@ async def on_ready():
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
+
+    # ! commands
+    if message.content.strip().lower() == "!floor":
+        await message.reply("There is no floor ILY")
+        return
+
+    # gm reaction
     if re.search(r"\bgm\b", message.content, re.IGNORECASE):
         emoji = discord.utils.get(message.guild.emojis, name="coffee") if message.guild else None
         try:
