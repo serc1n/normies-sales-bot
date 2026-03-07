@@ -8,12 +8,16 @@ import hmac
 import hashlib
 import base64
 import random
+import re
+import asyncio
 import threading
 import time
 import urllib.request
 import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone
+
+import discord
 
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -654,10 +658,42 @@ class WebhookHandler(BaseHTTPRequestHandler):
         pass
 
 
+# ── Discord Gateway (message reactions) ───────────────────────
+
+intents = discord.Intents.default()
+intents.message_content = True  # requires Message Content Intent in Dev Portal
+
+discord_client = discord.Client(intents=intents)
+
+@discord_client.event
+async def on_ready():
+    print(f"[discord-gateway] logged in as {discord_client.user}")
+
+@discord_client.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+    if re.search(r"\bgm\b", message.content, re.IGNORECASE):
+        emoji = discord.utils.get(message.guild.emojis, name="coffee") if message.guild else None
+        try:
+            await message.add_reaction(emoji or "☕")
+        except Exception as e:
+            print(f"[discord-gateway] reaction failed: {e}")
+
+
+def run_discord_gateway():
+    if not DISCORD_BOT_TOKEN:
+        print("[discord-gateway] no DISCORD_BOT_TOKEN — skipping gateway")
+        return
+    asyncio.run(discord_client.start(DISCORD_BOT_TOKEN))
+
+
 def main():
     print(f"Normies sales bot starting on port {PORT}")
     print(f"Contract: {NORMIES_CONTRACT}")
     register_slash_commands()
+    # Start Discord gateway in background thread
+    threading.Thread(target=run_discord_gateway, daemon=True).start()
     server = HTTPServer(("0.0.0.0", PORT), WebhookHandler)
     server.serve_forever()
 
