@@ -821,6 +821,9 @@ async def on_message(message: discord.Message):
     if cmd == "!article":
         await message.reply("https://x.com/normiesART/status/2028744015433097270?s=20")
         return
+    if cmd == "!wow":
+        await message.reply("https://cdn.discordapp.com/attachments/1476174593281626255/1479752143639547965/IMG_5837.gif?ex=69ad2e13&is=69abdc93&hm=3f7bc771389b06e8fefb40f7f5f2141376ec2ba3d4d503982eee7d1ded351473&")
+        return
 
     # gm reaction
     if re.search(r"\bgm\b", message.content, re.IGNORECASE):
