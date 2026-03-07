@@ -987,8 +987,8 @@ def poll_listings():
 
 _FUD_URL = (
     "https://cdn.discordapp.com/attachments/1057683747685793873"
-    "/1479771819824123914/i-fcking-hate-normies.mp4"
-    "?ex=69ad4066&is=69abeee6&hm=c351cc26e6d725c2578a7e0ede7ed6ba5f55829d31fca578f7f49d0b85c3de16&"
+    "/1479782020023455907/fud.mp4"
+    "?ex=69ad49e6&is=69abf866&hm=8c4b850b06bd4b0431a829e8648d3754f29ad18c2c29274805dcef622252ef0d&"
 )
 _fud_cache: bytes | None = None
 
