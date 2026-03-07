@@ -50,11 +50,13 @@ ZERO_ADDRESS      = "0x0000000000000000000000000000000000000000"
 NORMIES_IMAGE     = "https://api.normies.art/normie/{id}/image.png"
 OPENSEA_URL       = "https://opensea.io/assets/ethereum/{contract}/{id}"
 
-DISCORD_WEBHOOK      = os.environ.get("DISCORD_WEBHOOK", "")
-DISCORD_BURN_WEBHOOK = os.environ.get("DISCORD_BURN_WEBHOOK", "")
-DISCORD_APP_ID       = os.environ.get("DISCORD_APP_ID", "")
-DISCORD_BOT_TOKEN    = os.environ.get("DISCORD_BOT_TOKEN", "")
-DISCORD_PUBLIC_KEY   = os.environ.get("DISCORD_PUBLIC_KEY", "")
+DISCORD_WEBHOOK          = os.environ.get("DISCORD_WEBHOOK", "")
+DISCORD_BURN_WEBHOOK     = os.environ.get("DISCORD_BURN_WEBHOOK", "")
+DISCORD_LISTINGS_WEBHOOK = os.environ.get("DISCORD_LISTINGS_WEBHOOK", "")
+DISCORD_APP_ID           = os.environ.get("DISCORD_APP_ID", "")
+DISCORD_BOT_TOKEN        = os.environ.get("DISCORD_BOT_TOKEN", "")
+DISCORD_PUBLIC_KEY       = os.environ.get("DISCORD_PUBLIC_KEY", "")
+OPENSEA_API_KEY          = os.environ.get("OPENSEA_API_KEY", "")
 ALCHEMY_SIGNING_KEY  = os.environ.get("ALCHEMY_SIGNING_KEY", "")
 ALCHEMY_API_KEY      = os.environ.get("ALCHEMY_API_KEY", "kl7coWT2oFkRY0skuik4E")
 PORT = int(os.environ.get("PORT", "8080"))
@@ -658,6 +660,123 @@ class WebhookHandler(BaseHTTPRequestHandler):
         pass
 
 
+# ── THE100 listings poller (OpenSea API) ──────────────────────
+
+_seen_listings: set[str] = set()
+_listings_lock = threading.Lock()
+LISTINGS_POLL_INTERVAL = 120  # seconds
+
+
+def fetch_the100_listings() -> list[dict]:
+    """Fetch active listings for THE100 token IDs from OpenSea v2 API."""
+    results = []
+    headers = {
+        "accept": "application/json",
+        "User-Agent": "NormiesSalesBot/1.0",
+        "x-api-key": OPENSEA_API_KEY,
+    }
+    batch_size = 20
+    for i in range(0, len(THE100), batch_size):
+        batch = THE100[i:i + batch_size]
+        params = "&".join(f"token_ids={tid}" for tid in batch)
+        url = (
+            f"https://api.opensea.io/api/v2/orders/ethereum/seaport/listings"
+            f"?asset_contract_address={NORMIES_CONTRACT}&{params}"
+            f"&order_by=created_date&order_direction=desc&limit=50"
+        )
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+                results.extend(data.get("orders", []))
+        except Exception as e:
+            print(f"[listings] OpenSea fetch failed (batch {i}): {e}")
+    return results
+
+
+def post_listing_discord(token_id: str, price_eth: float):
+    if not DISCORD_LISTINGS_WEBHOOK:
+        return
+    traits = fetch_normie_traits(token_id)
+    image_url = NORMIES_IMAGE.format(id=token_id)
+    os_url    = OPENSEA_URL.format(contract=NORMIES_CONTRACT, id=token_id)
+
+    trait_parts = []
+    if traits.get("Type"):
+        trait_parts.append(f"**Type** {traits['Type']}")
+    if traits.get("Level") is not None:
+        trait_parts.append(f"**Level** {traits['Level']}")
+    if traits.get("Pixel Count") is not None:
+        trait_parts.append(f"**Pixels** {traits['Pixel Count']}")
+    if traits.get("Action Points") is not None:
+        trait_parts.append(f"**AP** {traits['Action Points']}")
+
+    price_rounded = round(price_eth, 4)
+    fields = [{"name": "Price", "value": f"{price_rounded:.4f} ETH", "inline": False}]
+    if trait_parts:
+        fields.append({"name": "\u200b", "value": "  ·  ".join(trait_parts), "inline": False})
+
+    embed = {
+        "title": f"THE100 \u00b7 Normie #{token_id} listed",
+        "url": os_url,
+        "color": 0x48494B,
+        "thumbnail": {"url": image_url},
+        "fields": fields,
+        "footer": {"text": "Normies \u00b7 Built by Normies, for Normies"},
+    }
+    payload = json.dumps({"embeds": [embed]}).encode()
+    req = urllib.request.Request(
+        DISCORD_LISTINGS_WEBHOOK,
+        data=payload,
+        headers={"Content-Type": "application/json", "User-Agent": "NormiesSalesBot/1.0"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            print(f"[listings] posted Normie #{token_id} listed at {price_rounded:.4f} ETH")
+    except Exception as e:
+        print(f"[listings] discord post failed: {e}")
+
+
+def poll_listings():
+    if not OPENSEA_API_KEY:
+        print("[listings] no OPENSEA_API_KEY — skipping listings poller")
+        return
+    if not DISCORD_LISTINGS_WEBHOOK:
+        print("[listings] no DISCORD_LISTINGS_WEBHOOK — skipping listings poller")
+        return
+    print("[listings] poller started")
+    while True:
+        try:
+            orders = fetch_the100_listings()
+            for order in orders:
+                order_hash = order.get("order_hash", "")
+                if not order_hash:
+                    continue
+                with _listings_lock:
+                    if order_hash in _seen_listings:
+                        continue
+                    _seen_listings.add(order_hash)
+
+                asset = order.get("maker_asset_bundle", {})
+                assets = asset.get("assets", [])
+                if not assets:
+                    continue
+                token_id = str(assets[0].get("token_id", ""))
+                price_wei = int(order.get("current_price", "0"))
+                price_eth = price_wei / 1e18
+
+                if price_eth > 0 and token_id:
+                    threading.Thread(
+                        target=post_listing_discord,
+                        args=(token_id, price_eth),
+                        daemon=True,
+                    ).start()
+        except Exception as e:
+            print(f"[listings] poll error: {e}")
+        time.sleep(LISTINGS_POLL_INTERVAL)
+
+
 # ── Discord Gateway (message reactions) ───────────────────────
 
 intents = discord.Intents.default()
@@ -692,8 +811,9 @@ def main():
     print(f"Normies sales bot starting on port {PORT}")
     print(f"Contract: {NORMIES_CONTRACT}")
     register_slash_commands()
-    # Start Discord gateway in background thread
+    # Start Discord gateway and listings poller in background threads
     threading.Thread(target=run_discord_gateway, daemon=True).start()
+    threading.Thread(target=poll_listings, daemon=True).start()
     server = HTTPServer(("0.0.0.0", PORT), WebhookHandler)
     server.serve_forever()
 
