@@ -1019,6 +1019,9 @@ async def on_message(message: discord.Message):
     if cmd == "!higher":
         await message.reply("https://cdn.discordapp.com/attachments/1476174593281626255/1479753393076572172/IMG_5756.gif?ex=69ad2f3d&is=69abddbd&hm=d7300e52db6e699bf3f59da0c92347ee87ac250e7338fe2a71e1163810daa0b0&")
         return
+    if cmd == "!fud":
+        await message.reply("https://cdn.discordapp.com/attachments/1057683747685793873/1479771819824123914/i-fcking-hate-normies.mp4?ex=69ad4066&is=69abeee6&hm=c351cc26e6d725c2578a7e0ede7ed6ba5f55829d31fca578f7f49d0b85c3de16&")
+        return
     # Community tools commands
     _TOOLS = {
         "!slidepuzzle": "https://normie-puzzle.vercel.app/",
