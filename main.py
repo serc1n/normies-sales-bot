@@ -1039,8 +1039,13 @@ async def on_message(message: discord.Message):
         return
     if cmd == "!fud":
         video_data = await asyncio.to_thread(_get_fud_video)
-        if video_data:
-            await message.reply(file=discord.File(io.BytesIO(video_data), filename="fud.mp4"))
+        if video_data and len(video_data) <= 8 * 1024 * 1024:
+            try:
+                await message.reply(file=discord.File(io.BytesIO(video_data), filename="fud.mp4"))
+                return
+            except discord.HTTPException:
+                pass
+        await message.reply(_FUD_URL)
         return
     # Community tools commands
     _TOOLS = {
