@@ -745,10 +745,27 @@ def poll_listings():
     if not DISCORD_LISTINGS_WEBHOOK:
         print("[listings] no DISCORD_LISTINGS_WEBHOOK — skipping listings poller")
         return
-    print("[listings] poller started")
+
+    # First poll: seed existing listings as seen without posting
+    print("[listings] seeding existing listings...")
+    try:
+        orders = fetch_the100_listings()
+        with _listings_lock:
+            for order in orders:
+                h = order.get("order_hash", "")
+                if h:
+                    _seen_listings.add(h)
+        print(f"[listings] seeded {len(_seen_listings)} existing listings — will only post new ones")
+    except Exception as e:
+        print(f"[listings] seed error: {e}")
+
+    time.sleep(LISTINGS_POLL_INTERVAL)
+
+    print("[listings] poller started — watching for new listings")
     while True:
         try:
             orders = fetch_the100_listings()
+            new_orders = []
             for order in orders:
                 order_hash = order.get("order_hash", "")
                 if not order_hash:
@@ -757,7 +774,9 @@ def poll_listings():
                     if order_hash in _seen_listings:
                         continue
                     _seen_listings.add(order_hash)
+                new_orders.append(order)
 
+            for order in new_orders:
                 asset = order.get("maker_asset_bundle", {})
                 assets = asset.get("assets", [])
                 if not assets:
@@ -767,11 +786,9 @@ def poll_listings():
                 price_eth = price_wei / 1e18
 
                 if price_eth > 0 and token_id:
-                    threading.Thread(
-                        target=post_listing_discord,
-                        args=(token_id, price_eth),
-                        daemon=True,
-                    ).start()
+                    post_listing_discord(token_id, price_eth)
+                    time.sleep(1)  # 1s between posts to respect Discord rate limits
+
         except Exception as e:
             print(f"[listings] poll error: {e}")
         time.sleep(LISTINGS_POLL_INTERVAL)
