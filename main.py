@@ -818,7 +818,13 @@ def run_discord_gateway():
     if not DISCORD_BOT_TOKEN:
         print("[discord-gateway] no DISCORD_BOT_TOKEN — skipping gateway")
         return
-    asyncio.run(discord_client.start(DISCORD_BOT_TOKEN))
+    print("[discord-gateway] connecting...")
+    try:
+        asyncio.run(discord_client.start(DISCORD_BOT_TOKEN))
+    except discord.LoginFailure:
+        print("[discord-gateway] ERROR: invalid bot token")
+    except Exception as e:
+        print(f"[discord-gateway] ERROR: {e}")
 
 
 def main():
