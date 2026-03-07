@@ -794,8 +794,15 @@ async def on_message(message: discord.Message):
         return
 
     # ! commands
-    if message.content.strip().lower() == "!floor":
+    cmd = message.content.strip().lower()
+    if cmd == "!floor":
         await message.reply("There is no floor ILY")
+        return
+    if cmd == "!docs":
+        await message.reply("https://www.normies.art/docs/normies")
+        return
+    if cmd == "!article":
+        await message.reply("https://x.com/normiesART/status/2028744015433097270?s=20")
         return
 
     # gm reaction
