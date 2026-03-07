@@ -824,6 +824,9 @@ async def on_message(message: discord.Message):
     if cmd == "!wow":
         await message.reply("https://cdn.discordapp.com/attachments/1476174593281626255/1479752143639547965/IMG_5837.gif?ex=69ad2e13&is=69abdc93&hm=3f7bc771389b06e8fefb40f7f5f2141376ec2ba3d4d503982eee7d1ded351473&")
         return
+    if cmd == "!vibes":
+        await message.reply("https://cdn.discordapp.com/attachments/1476174593281626255/1479752583525699734/IMG_5829.gif?ex=69ad2e7c&is=69abdcfc&hm=e0be8ed17ea8af91c0ea8a47af58271f6ae71a887e5da131d003d00d82c85af0&")
+        return
 
     # gm reaction
     if re.search(r"\bgm\b", message.content, re.IGNORECASE):
